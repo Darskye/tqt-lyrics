@@ -14,6 +14,7 @@ struct NowPlaying {
   char     track[100];
   char     artist[100];
   char     album[100];
+  char     artUrl[160];  // smallest album-art thumbnail Spotify offers
   uint32_t progressMs;
   uint32_t durationMs;
   bool     playing;

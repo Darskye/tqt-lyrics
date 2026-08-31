@@ -19,6 +19,7 @@
 #include "lyrics.h"
 #include "typeview.h"
 #include "net.h"
+#include "albumart.h"
 
 #define PIN_BTN_L  0    // re-roll the scene for the current line
 #define PIN_BTN_R  47   // toggle the status readout
@@ -38,6 +39,9 @@ static int         cur = 0;
 static bool     showStatus = false;
 static uint32_t sceneSalt  = 0;      // shifts scene choice without touching timing
 static int      fps = 0;
+// Ink colour for everything drawn. Pulled from the album art per track,
+// white whenever the sleeve is black, greyscale, or unavailable.
+static volatile uint16_t gInk = INK_ON;
 static uint8_t  rotation = SCREEN_ROTATION;
 
 // ------------------------------------------------------------------ playback
@@ -96,6 +100,9 @@ static void netTask(void*) {
               haveLyrics = false;
               Serial.println("[lyrics] none on lrclib for this track");
             }
+            uint16_t ink = INK_ON;
+            gInk = artFetchInk(fresh.artUrl, ink) ? ink : INK_ON;
+
             strncpy(loadedTrack, fresh.track, sizeof(loadedTrack) - 1);
             loadedTrack[sizeof(loadedTrack) - 1] = 0;
             lastLineIdx = -2;
@@ -213,8 +220,8 @@ void setup() {
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
   if (netEnabled()) {
-    // 16KB: an mbedTLS handshake with bundle verification is stack-hungry.
-    xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 1, nullptr, 0);
+    // 20KB: an mbedTLS handshake plus a JPEG decode are both stack-hungry.
+    xTaskCreatePinnedToCore(netTask, "net", 20480, nullptr, 1, nullptr, 0);
     Serial.println("[net] credentials present, polling Spotify");
   } else {
     Serial.println("[net] no src/secrets.h -- demo mode");
@@ -269,12 +276,12 @@ void loop() {
                                                   : startMs + 4000;
     uint32_t age  = posMs > startMs ? posMs - startMs : 0;
     uint32_t hold = nextMs > startMs ? nextMs - startMs : 3000;
-    typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt);
+    typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt, gInk);
   } else {
     // Between lines and between tracks: hold the track card rather than
     // flashing an empty panel.
     typeDrawIdle(s, live ? np.track : "", live ? np.artist : "",
-                 netStatus(), millis());
+                 netStatus(), millis(), gInk);
   }
 
   if (idx != lastLineIdx) {

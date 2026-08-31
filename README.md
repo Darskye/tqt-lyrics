@@ -12,6 +12,21 @@ At roughly 16 characters per row there is no room for a lyric sheet, so this
 does not try to be one. It shows one line at a time and lets the *presentation*
 carry it: scale, motion, inversion and layout instead of colour.
 
+## Colour
+
+Type is drawn in one ink colour per track, pulled from the album art.
+
+Spotify's response already carries cover thumbnails; the smallest (64x64, a few
+KB) is fetched and decoded on-device, and each pixel is binned into a coarse
+512-bucket histogram **weighted by saturation**. That weighting is the whole
+trick: a mostly-grey sleeve with one red stripe reads as red rather than
+averaging to mud. Near-black and washed-out pixels are skipped entirely.
+
+The winning bucket is brightness-normalised so it stays legible on black
+without shifting hue. If fewer than 3% of pixels are colourful at all -- a
+black, white or greyscale sleeve -- it falls back to **white**, which is both
+the honest answer and the better-looking one.
+
 ## Scenes
 
 The scene is picked deterministically from the line index, so it holds for that
@@ -33,8 +48,14 @@ than clip.
 
 Type is TFT_eSPI's built-in font 1 — a 6x8 cell — scaled by integer multiples.
 That keeps it crisp at any size, which is what makes large blocky type look
-deliberate rather than stretched. `fitSize()` picks the largest multiple that
-still fits the box.
+deliberate rather than stretched.
+
+**Nothing is ever clipped.** `layoutFit()` steps the size down until the whole
+line fits its box, and `wrapText()` reports overflow rather than silently
+dropping rows. The floor is size 1: 21 columns by 16 rows, ~330 characters,
+comfortably longer than any lyric line. Scenes declare a preferred maximum size
+and get a smaller one automatically — on real lyrics, a 6-character line takes
+size 3 while a 61-character line drops to size 1 across 4 rows.
 
 ## Lyrics
 

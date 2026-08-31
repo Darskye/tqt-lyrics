@@ -193,6 +193,9 @@ bool netPollSpotify(NowPlaying& out) {
   filter["item"]["duration_ms"]      = true;
   filter["item"]["album"]["name"]    = true;
   filter["item"]["artists"][0]["name"] = true;
+  // Spotify lists covers largest first (640/300/64); we want the smallest.
+  filter["item"]["album"]["images"][0]["url"]    = true;
+  filter["item"]["album"]["images"][0]["height"] = true;
 
   JsonDocument doc;
   DeserializationError err =
@@ -209,6 +212,20 @@ bool netPollSpotify(NowPlaying& out) {
   out.album[sizeof(out.album) - 1] = '\0';
   strncpy(out.artist, item["artists"][0]["name"] | "", sizeof(out.artist) - 1);
   out.artist[sizeof(out.artist) - 1] = '\0';
+
+  out.artUrl[0] = 0;
+  JsonArray imgs = item["album"]["images"];
+  int smallest = 1 << 30;
+  for (JsonObject im : imgs) {
+    int h = im["height"] | 0;
+    const char* u = im["url"];
+    if (!u || !*u) continue;
+    if (h > 0 && h < smallest) {
+      smallest = h;
+      strncpy(out.artUrl, u, sizeof(out.artUrl) - 1);
+      out.artUrl[sizeof(out.artUrl) - 1] = 0;
+    }
+  }
 
   out.progressMs = doc["progress_ms"] | 0;
   out.durationMs = item["duration_ms"] | 0;
