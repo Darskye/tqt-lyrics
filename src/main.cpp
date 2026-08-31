@@ -241,6 +241,12 @@ void loop() {
     int c = Serial.read();
     if      (c == 'r') { sceneSalt += 7; lastLineIdx = -2; }
     else if (c == 's') showStatus = !showStatus;
+    else if (c == 'l') {
+      // Force a lyrics re-fetch on the next poll by forgetting which track is
+      // loaded. Makes the LRCLIB path testable without changing songs.
+      loadedTrack[0] = 0;
+      Serial.println("[lrclib] forcing re-fetch on next poll");
+    }
     else if (c == 'o') {
       rotation = (rotation + 1) & 3;
       tft.setRotation(rotation);

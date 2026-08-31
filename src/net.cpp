@@ -230,37 +230,86 @@ String urlEncode(const char* s) {
   return out;
 }
 
-bool netFetchLyrics(const NowPlaying& np, String& body) {
-  if (!netConnected() || !np.valid) return false;
+#define LRCLIB_UA "tqt-lyrics (github.com/Darskye/tqt-lyrics)"
 
-  String url = "https://lrclib.net/api/get?track_name=" + urlEncode(np.track) +
-               "&artist_name=" + urlEncode(np.artist) +
-               "&album_name="  + urlEncode(np.album) +
-               "&duration="    + String(np.durationMs / 1000);
-
+// LRCLIB replies with Transfer-Encoding: chunked and no Content-Length.
+// HTTPClient::getStream() hands back the raw socket with the chunk-size
+// markers still in it, so parsing from the stream feeds hex chunk headers to
+// the JSON parser. getString() de-chunks, which is why every request here
+// reads the body first and parses from that.
+static bool lrclibTry(const String& url, String& body, const char* what) {
   WiFiClientSecure client;
   applyTls(client);
   HTTPClient http;
-  if (!http.begin(client, url)) return false;
-  http.addHeader("User-Agent", "tqt-shaders (github.com/Darskye/tqt-shaders)");
+  if (!http.begin(client, url)) {
+    Serial.printf("[lrclib] %s: begin failed\n", what);
+    return false;
+  }
+  http.addHeader("User-Agent", LRCLIB_UA);
 
   int code = http.GET();
-  if (code != 200) { http.end(); return false; }
+  if (code != 200) {
+    // Negative codes are TLS or connection failures, not "no such track".
+    Serial.printf("[lrclib] %s -> %d\n", what, code);
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  http.end();
 
   JsonDocument filter;
   filter["syncedLyrics"] = true;
   filter["instrumental"] = true;
   JsonDocument doc;
   DeserializationError err =
-      deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-  http.end();
-  if (err) return false;
+      deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+  if (err) {
+    Serial.printf("[lrclib] %s json: %s\n", what, err.c_str());
+    return false;
+  }
 
-  if (doc["instrumental"] | false) { body = ""; return false; }
+  if (doc["instrumental"] | false) {
+    Serial.printf("[lrclib] %s: marked instrumental\n", what);
+    return false;
+  }
   const char* synced = doc["syncedLyrics"];
-  if (!synced || !*synced) { body = ""; return false; }
+  if (!synced || !*synced) {
+    Serial.printf("[lrclib] %s: no synced lyrics in result\n", what);
+    return false;
+  }
   body = synced;
+  Serial.printf("[lrclib] %s: matched\n", what);
   return true;
+}
+
+// LRCLIB matches on track, artist, album and duration together, and the album
+// string is the fragile part: Spotify reports "The Slow Rush (CD)" or a
+// deluxe/remaster edition where the lyrics were filed under the plain album,
+// and the lookup misses. So widen the query in stages rather than give up --
+// each response is only a few KB, unlike /api/search which returns ~150KB and
+// will not fit in RAM.
+bool netFetchLyrics(const NowPlaying& np, String& body) {
+  if (!netConnected() || !np.valid) return false;
+  body = "";
+
+  const String base = "https://lrclib.net/api/get?track_name=" + urlEncode(np.track) +
+                      "&artist_name=" + urlEncode(np.artist);
+  const String dur  = "&duration=" + String(np.durationMs / 1000);
+
+  // Most precise first: everything Spotify told us.
+  if (np.album[0] &&
+      lrclibTry(base + "&album_name=" + urlEncode(np.album) + dur, body, "exact"))
+    return true;
+
+  // Drop the album. This is the one that usually rescues it.
+  if (lrclibTry(base + dur, body, "no-album")) return true;
+
+  // Last resort: let LRCLIB pick the version. Risks matching a live or
+  // extended cut, but a slightly wrong timing beats a blank panel.
+  if (lrclibTry(base, body, "any-duration")) return true;
+
+  return false;
 }
 
 #else   // ---------------------------------------------------- no credentials

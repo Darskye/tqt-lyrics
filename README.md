@@ -76,7 +76,22 @@ sequence so every scene is visible.
 | Buttons | GPIO 0 (left), GPIO 47 (right) — active low, internal pullup |
 | Battery sense | GPIO 4 |
 
-## Two traps worth knowing
+## Three traps worth knowing
+
+**LRCLIB replies chunked, so you cannot parse from the stream.** Its responses
+carry `Transfer-Encoding: chunked` with no `Content-Length`, and
+`HTTPClient::getStream()` hands back the raw socket with the chunk-size markers
+still embedded — so a JSON parser reading that stream is fed hex chunk headers
+and quietly produces nothing. `getString()` de-chunks; every LRCLIB request
+here reads the body first and parses from that. Spotify sends `Content-Length`,
+which is why only the lyrics half broke, and why it looked like a lookup
+problem rather than a transport one.
+
+Lookups also widen in stages, because the album string is the fragile part:
+Spotify reports things like `The Slow Rush (CD)` where the lyrics were filed
+under the plain album name. So it tries album+duration, then drops the album,
+then drops the duration. Each response is a few KB — `/api/search` returns
+~150KB and will not fit in RAM.
 
 **Sprites must be forced into internal SRAM.** This SDK sets
 `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`, so a 32KB sprite goes to PSRAM by
