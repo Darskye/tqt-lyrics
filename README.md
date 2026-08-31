@@ -111,6 +111,11 @@ rendering bug. Each frame gets its own `startWrite`/`endWrite` instead.
 | GPIO 47 button | toggle the status readout |
 | serial `r` | re-roll scene |
 | serial `s` | toggle status |
+| serial `o` | cycle panel rotation (prints the value for `SCREEN_ROTATION`) |
+
+The panel mounts upside down relative to TFT_eSPI's rotation 0, so
+`SCREEN_ROTATION` in `src/main.cpp` defaults to **2**. If yours differs, press
+`o` until it looks right and put that number in the define.
 
 ## Panel revisions
 

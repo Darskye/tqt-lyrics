@@ -26,6 +26,11 @@
 
 #define SPOTIFY_POLL_MS 5000
 
+// Panel orientation. 0 and 2 are the two portrait orientations, 180 apart.
+// Cycle live with 'o' over serial to find yours, then set it here so it sticks
+// across reflashes.
+#define SCREEN_ROTATION 2
+
 static TFT_eSPI    tft;
 static TFT_eSprite spr[2] = {TFT_eSprite(&tft), TFT_eSprite(&tft)};
 static int         cur = 0;
@@ -33,6 +38,7 @@ static int         cur = 0;
 static bool     showStatus = false;
 static uint32_t sceneSalt  = 0;      // shifts scene choice without touching timing
 static int      fps = 0;
+static uint8_t  rotation = SCREEN_ROTATION;
 
 // ------------------------------------------------------------------ playback
 static Lyrics     lyrics;
@@ -179,7 +185,7 @@ void setup() {
   selfTestLyrics();
 
   tft.init();
-  tft.setRotation(0);
+  tft.setRotation(rotation);
   tft.fillScreen(TFT_BLACK);
 
   pinMode(PIN_LCD_BL, OUTPUT);
@@ -218,7 +224,7 @@ void setup() {
   haveLyrics = true;
 
   Serial.println("BTN_L (GPIO0) re-roll scene   BTN_R (GPIO47) status readout");
-  Serial.println("serial: r re-roll, s status");
+  Serial.println("serial: r re-roll, s status, o rotate");
 }
 
 // ------------------------------------------------------------------ loop
@@ -235,6 +241,11 @@ void loop() {
     int c = Serial.read();
     if      (c == 'r') { sceneSalt += 7; lastLineIdx = -2; }
     else if (c == 's') showStatus = !showStatus;
+    else if (c == 'o') {
+      rotation = (rotation + 1) & 3;
+      tft.setRotation(rotation);
+      Serial.printf("[rotation] %d  <- set SCREEN_ROTATION to this\n", rotation);
+    }
   }
 
   TFT_eSprite& s = spr[cur];
