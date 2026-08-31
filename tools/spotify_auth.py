@@ -6,8 +6,9 @@ in this script, not in your firmware, not on the board. A device that only ever
 reads your playback state has no business carrying a secret that could be
 pulled out of its flash.
 
-Prints a refresh token to paste into src/secrets.h. Nothing is transmitted
-anywhere except to Spotify, and nothing is written to disk.
+Produces a refresh token for src/secrets.h. With your say-so it writes the two
+values straight into that file (WiFi lines untouched); decline and it prints
+them for you to paste instead. Nothing is transmitted anywhere except Spotify.
 
 Setup, first:
   1. https://developer.spotify.com/dashboard -> your app -> Settings
@@ -21,6 +22,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import secrets
 import socketserver
 import sys
@@ -122,10 +124,52 @@ def main():
     if "refresh_token" not in tok:
         sys.exit(f"no refresh token in response: {tok}")
 
+    refresh = tok["refresh_token"]
+
+    # A refresh token is ~130 characters. Selecting that out of a terminal
+    # without clipping it is a real hazard, and a short paste fails later as an
+    # opaque HTTP 400. Offer to write it straight into secrets.h instead.
+    here = os.path.dirname(os.path.abspath(__file__))
+    secrets_path = os.path.join(here, "..", "src", "secrets.h")
+    secrets_path = os.path.normpath(secrets_path)
+
+    if os.path.exists(secrets_path):
+        print(f"\nFound {secrets_path}")
+        ans = input("Write the Spotify values into it now? [Y/n]: ").strip().lower()
+        if ans in ("", "y", "yes"):
+            with open(secrets_path, encoding="utf-8") as fh:
+                text = fh.read()
+
+            def put(src, name, value):
+                pat = re.compile(r'^(\s*#define\s+' + name + r'\s+)"[^"]*"',
+                                 re.MULTILINE)
+                if not pat.search(src):
+                    return src, False
+                return pat.sub(lambda m: m.group(1) + '"' + value + '"', src, count=1), True
+
+            text, ok_id = put(text, "SPOTIFY_CLIENT_ID", client_id)
+            text, ok_rt = put(text, "SPOTIFY_REFRESH_TOKEN", refresh)
+
+            if not (ok_id and ok_rt):
+                sys.exit("could not find both #define lines to update; edit by hand")
+
+            with open(secrets_path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+
+            print(f"\n  Wrote SPOTIFY_CLIENT_ID     ({len(client_id)} chars)")
+            print(f"  Wrote SPOTIFY_REFRESH_TOKEN ({len(refresh)} chars)")
+            print("\nWiFi lines were left untouched -- set those yourself if you")
+            print("have not already. Then reflash:")
+            print("  python -m platformio run -t upload")
+            print("\nNote: with PKCE, Spotify rotates the refresh token on every")
+            print("refresh. The firmware saves each new one to NVS, so this value")
+            print("is only the first-boot seed and going stale is expected.")
+            return
+
     print("\n" + "=" * 68)
     print("Paste these into src/secrets.h (gitignored). No client secret needed.\n")
     print(f'#define SPOTIFY_CLIENT_ID     "{client_id}"')
-    print(f'#define SPOTIFY_REFRESH_TOKEN "{tok["refresh_token"]}"')
+    print(f'#define SPOTIFY_REFRESH_TOKEN "{refresh}"')
     print("=" * 68)
     print("\nNote: with PKCE, Spotify rotates the refresh token on every refresh.")
     print("The firmware saves each new one to NVS, so this value is only the seed")
