@@ -2,8 +2,11 @@
 #include <string.h>
 #include <stdio.h>
 
-#define ROW_MAX   8
-#define ROW_CHARS 48
+// Room for the worst case: font 1 at size 1 is a 6x8 cell, so 21 characters
+// across and 16 rows down. That holds ~330 characters, far longer than any
+// lyric line, which is what lets layoutFit() promise never to clip.
+#define ROW_MAX   16
+#define ROW_CHARS 64
 
 enum Scene {
   SC_HERO, SC_STACK, SC_INVERT, SC_WIPE, SC_SCROLL,
@@ -13,6 +16,14 @@ enum Scene {
 static const char* kSceneNames[SC_COUNT] = {
   "hero", "stack", "invert", "wipe", "scroll",
   "type", "flash", "rule", "box", "split"
+};
+
+struct Layout {
+  int  size;
+  int  nRows;
+  int  lineH;
+  int  blockH;
+  char rows[ROW_MAX][ROW_CHARS];
 };
 
 static float easeOutCubic(float t) {
@@ -45,7 +56,6 @@ static void nthWord(const char* text, int idx, char* out, int outSize) {
   out[n] = 0;
 }
 
-// The longest word carries the line visually; HERO builds the frame around it.
 static void longestWord(const char* text, char* out, int outSize) {
   int wc = wordCount(text);
   int best = 0, bestLen = -1;
@@ -58,30 +68,21 @@ static void longestWord(const char* text, char* out, int outSize) {
   nthWord(text, best, out, outSize);
 }
 
-// Largest integer text size that still fits the box. Font 1 is a 6x8 cell, so
-// scaling it stays crisp at any multiple -- which is what makes big blocky type
-// look deliberate here rather than stretched.
-static int fitSize(TFT_eSprite& s, const char* txt, int font,
-                   int maxW, int maxH, int hi) {
-  s.setTextFont(font);
-  for (int sz = hi; sz >= 1; sz--) {
-    s.setTextSize(sz);
-    if (s.textWidth(txt) <= maxW && s.fontHeight() <= maxH) return sz;
-  }
-  s.setTextSize(1);
-  return 1;
-}
-
-static int wrapText(TFT_eSprite& s, const char* txt,
-                    char rows[][ROW_CHARS], int maxRows, int maxW) {
+// Greedy word wrap against the font currently set on the sprite.
+// Sets *overflow when text remained after maxRows -- the caller must not
+// simply draw what it got, because the rest would be silently lost.
+static int wrapText(TFT_eSprite& s, const char* txt, char rows[][ROW_CHARS],
+                    int maxRows, int maxW, bool* overflow) {
+  if (overflow) *overflow = false;
   int n = 0;
   const char* p = txt;
   char cur[ROW_CHARS];
   cur[0] = 0;
 
-  while (*p && n < maxRows) {
+  while (*p) {
     while (*p == ' ') p++;
     if (!*p) break;
+
     const char* ws = p;
     while (*p && *p != ' ') p++;
     int wlen = (int)(p - ws);
@@ -98,14 +99,61 @@ static int wrapText(TFT_eSprite& s, const char* txt,
       strncpy(cur, trial, ROW_CHARS - 1);
       cur[ROW_CHARS - 1] = 0;
     } else {
+      if (n >= maxRows) { if (overflow) *overflow = true; return n; }
       strncpy(rows[n], cur, ROW_CHARS - 1); rows[n][ROW_CHARS - 1] = 0; n++;
       strncpy(cur, word, ROW_CHARS - 1);    cur[ROW_CHARS - 1] = 0;
     }
   }
-  if (cur[0] && n < maxRows) {
+  if (cur[0]) {
+    if (n >= maxRows) { if (overflow) *overflow = true; return n; }
     strncpy(rows[n], cur, ROW_CHARS - 1); rows[n][ROW_CHARS - 1] = 0; n++;
   }
   return n;
+}
+
+// Last fit result, for the serial readout -- proves the auto-fit is actually
+// stepping down rather than quietly clipping.
+static int  g_lastSize = 0, g_lastRows = 0, g_lastAsked = 0;
+static bool g_lastClipped = false;
+
+void typeLastFit(int& size, int& rows, int& asked, bool& clipped) {
+  size = g_lastSize; rows = g_lastRows; asked = g_lastAsked; clipped = g_lastClipped;
+}
+
+// Largest text size at which the ENTIRE string fits inside maxW x maxH.
+// Steps down instead of clipping. Size 1 always "succeeds" as the floor, so a
+// line is never dropped even in the pathological case.
+static void layoutFit(TFT_eSprite& s, const char* txt, int font,
+                      int maxW, int maxH, int maxSize, Layout& L) {
+  for (int sz = (maxSize < 1 ? 1 : maxSize); sz >= 1; sz--) {
+    s.setTextFont(font);
+    s.setTextSize(sz);
+
+    bool ovf = false;
+    int n = wrapText(s, txt, L.rows, ROW_MAX, maxW, &ovf);
+    int lineH = s.fontHeight() + (sz > 1 ? 2 : 1);
+
+    bool tooWide = false;
+    for (int i = 0; i < n; i++)
+      if (s.textWidth(L.rows[i]) > maxW) { tooWide = true; break; }
+
+    bool fits = !ovf && n > 0 && !tooWide && (n * lineH) <= maxH;
+    if (fits || sz == 1) {
+      L.size   = sz;
+      L.nRows  = n;
+      L.lineH  = lineH;
+      L.blockH = n * lineH;
+      g_lastSize = sz; g_lastRows = n;
+      g_lastAsked = (maxSize < 1 ? 1 : maxSize);
+      g_lastClipped = !fits;      // only true if even size 1 could not fit
+      return;
+    }
+  }
+}
+
+static void applyLayout(TFT_eSprite& s, int font, const Layout& L) {
+  s.setTextFont(font);
+  s.setTextSize(L.size);
 }
 
 static Scene sceneFromSeed(uint32_t seed) {
@@ -116,200 +164,207 @@ static Scene sceneFromSeed(uint32_t seed) {
 
 const char* typeSceneName(uint32_t seed) { return kSceneNames[sceneFromSeed(seed)]; }
 
+static Scene chooseScene(const char* text, uint32_t seed) {
+  Scene sc = sceneFromSeed(seed);
+  int wc = wordCount(text);
+  // These two only make sense with something to divide or emphasise.
+  if (sc == SC_HERO  && wc < 2) sc = SC_STACK;
+  if (sc == SC_SPLIT && wc < 2) sc = SC_BOX;
+  // Scrolling a short line looks broken -- it is over before it reads.
+  if (sc == SC_SCROLL && strlen(text) < 18) sc = SC_RULE;
+  return sc;
+}
+
 // ---------------------------------------------------------------- scenes
 void typeDraw(TFT_eSprite& s, const char* text,
-              uint32_t ageMs, uint32_t holdMs, uint32_t seed) {
+              uint32_t ageMs, uint32_t holdMs, uint32_t seed, uint16_t ink) {
   s.fillSprite(INK_OFF);
   if (!text || !*text) return;
 
-  Scene sc = sceneFromSeed(seed);
-  int len = (int)strlen(text);
-  if (sc == SC_HERO  && wordCount(text) < 2) sc = SC_STACK;
-  if (sc == SC_SCROLL && len < 18)           sc = SC_RULE;
-  if (sc == SC_SPLIT  && wordCount(text) < 2) sc = SC_BOX;
-
+  Scene sc = chooseScene(text, seed);
   float in = easeOutCubic((float)ageMs / 300.0f);
-  char rows[ROW_MAX][ROW_CHARS];
-  uint16_t fg = INK_ON, bg = INK_OFF;
+  Layout L;
 
   switch (sc) {
-    // One word enormous, the rest of the line small beneath it.
+    // One word set as large as it will go, the whole line small beneath it.
     case SC_HERO: {
       char key[ROW_CHARS];
       longestWord(text, key, sizeof(key));
-      int sz = fitSize(s, key, 1, SCR_W - 6, 56, 6);
-      s.setTextDatum(MC_DATUM);
-      s.setTextColor(fg, bg);
-      s.setTextFont(1);
-      s.setTextSize(sz);
-      int yc = 54 + (int)((1.0f - in) * 10.0f);
-      s.drawString(key, SCR_W / 2, yc);
 
-      s.setTextSize(1);
-      s.setTextFont(2);
-      int n = wrapText(s, text, rows, 3, SCR_W - 8);
-      int lh = s.fontHeight() + 1;
-      for (int i = 0; i < n; i++)
-        s.drawString(rows[i], SCR_W / 2, 92 + i * lh);
+      Layout K;
+      layoutFit(s, key, 1, SCR_W - 6, 58, 6, K);
+      applyLayout(s, 1, K);
+      s.setTextDatum(MC_DATUM);
+      s.setTextColor(ink, INK_OFF);
+      int yc = 50 + (int)((1.0f - in) * 10.0f);
+      s.drawString(K.rows[0], SCR_W / 2, yc);
+
+      layoutFit(s, text, 1, SCR_W - 8, 44, 2, L);
+      applyLayout(s, 1, L);
+      int y0 = 94 - L.blockH / 2 + L.lineH / 2;
+      for (int i = 0; i < L.nRows; i++)
+        s.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
       break;
     }
 
-    // Words stacked and left-aligned, each sliding in slightly after the last.
+    // Rows stacked left-aligned, each sliding in just after the one above.
     case SC_STACK: {
+      layoutFit(s, text, 1, SCR_W - 10, SCR_H - 12, 3, L);
+      applyLayout(s, 1, L);
       s.setTextDatum(TL_DATUM);
-      s.setTextColor(fg, bg);
-      s.setTextFont(1);
-      s.setTextSize(2);
-      int n = wrapText(s, text, rows, 5, SCR_W - 8);
-      int lh = s.fontHeight() + 4;
-      int y0 = (SCR_H - n * lh) / 2;
-      for (int i = 0; i < n; i++) {
+      s.setTextColor(ink, INK_OFF);
+      int y0 = (SCR_H - L.blockH) / 2;
+      for (int i = 0; i < L.nRows; i++) {
         float li = easeOutCubic(((float)ageMs - i * 55.0f) / 300.0f);
         int x = 6 - (int)((1.0f - li) * 60.0f);
-        s.drawString(rows[i], x, y0 + i * lh);
+        s.drawString(L.rows[i], x, y0 + i * L.lineH);
       }
       break;
     }
 
-    // Black on white. The strongest contrast move available in monochrome.
+    // Knocked out of a filled field -- the strongest contrast move available.
     case SC_INVERT: {
-      s.fillSprite(INK_ON);
-      fg = INK_OFF; bg = INK_ON;
+      s.fillSprite(ink);
+      layoutFit(s, text, 1, SCR_W - 14, SCR_H - 16, 3, L);
+      applyLayout(s, 1, L);
       s.setTextDatum(MC_DATUM);
-      s.setTextColor(fg, bg);
-      s.setTextFont(1);
-      s.setTextSize(2);
-      int n = wrapText(s, text, rows, 5, SCR_W - 10);
-      int lh = s.fontHeight() + 3;
-      int y0 = SCR_H / 2 - (n - 1) * lh / 2;
-      for (int i = 0; i < n; i++) s.drawString(rows[i], SCR_W / 2, y0 + i * lh);
+      s.setTextColor(INK_OFF, ink);
+      int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
+      for (int i = 0; i < L.nRows; i++)
+        s.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
       break;
     }
 
-    // Text is there from the first frame; a black shutter retreats off it.
+    // Type is there from frame one; a shutter retreats off it.
     case SC_WIPE: {
+      layoutFit(s, text, 1, SCR_W - 14, SCR_H - 16, 3, L);
+      applyLayout(s, 1, L);
       s.setTextDatum(MC_DATUM);
-      s.setTextColor(fg, bg);
-      s.setTextFont(1);
-      s.setTextSize(2);
-      int n = wrapText(s, text, rows, 5, SCR_W - 10);
-      int lh = s.fontHeight() + 3;
-      int y0 = SCR_H / 2 - (n - 1) * lh / 2;
-      for (int i = 0; i < n; i++) s.drawString(rows[i], SCR_W / 2, y0 + i * lh);
+      s.setTextColor(ink, INK_OFF);
+      int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
+      for (int i = 0; i < L.nRows; i++)
+        s.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
       int cut = (int)(in * SCR_W);
       if (cut < SCR_W) {
         s.fillRect(cut, 0, SCR_W - cut, SCR_H, INK_OFF);
-        s.fillRect(cut, 0, 2, SCR_H, INK_ON);      // leading edge
+        s.fillRect(cut, 0, 2, SCR_H, ink);            // leading edge
       }
       break;
     }
 
-    // Long lines get one big row that tracks across, ticker style.
+    // One big row travelling across, between two rules.
     case SC_SCROLL: {
-      s.setTextDatum(TL_DATUM);
-      s.setTextColor(fg, bg);
       s.setTextFont(1);
       s.setTextSize(3);
+      s.setTextDatum(TL_DATUM);
+      s.setTextColor(ink, INK_OFF);
       int w = s.textWidth(text);
       uint32_t span = holdMs ? holdMs : 3000;
       float t = span ? (float)ageMs / (float)span : 0.0f;
       if (t > 1.0f) t = 1.0f;
-      int travel = w + SCR_W;
-      int x = SCR_W - (int)(t * travel);
+      int x = SCR_W - (int)(t * (w + SCR_W));
       int y = (SCR_H - s.fontHeight()) / 2;
       s.drawString(text, x, y);
-      s.fillRect(0, y - 10, SCR_W, 2, INK_ON);
-      s.fillRect(0, y + s.fontHeight() + 8, SCR_W, 2, INK_ON);
+      s.fillRect(0, y - 10, SCR_W, 2, ink);
+      s.fillRect(0, y + s.fontHeight() + 8, SCR_W, 2, ink);
       break;
     }
 
-    // Typewriter with a block cursor, monospaced by construction (font 1).
+    // Typewriter with a block cursor. The layout is measured on the FULL line
+    // so the block does not jump around as characters arrive.
     case SC_TYPE: {
-      s.setTextDatum(TL_DATUM);
-      s.setTextColor(fg, bg);
-      s.setTextFont(1);
-      s.setTextSize(2);
+      layoutFit(s, text, 1, SCR_W - 10, SCR_H - 12, 3, L);
+      int size = L.size;
+
       uint32_t span = holdMs ? (holdMs * 55 / 100) : 900;
       if (span < 150) span = 150;
-      int total = len;
+      int total  = (int)strlen(text);
       int reveal = (int)((uint64_t)ageMs * (uint64_t)total / (uint64_t)span);
       if (reveal > total) reveal = total;
 
-      char partial[ROW_CHARS * 2];
+      char partial[ROW_CHARS * 4];
       int take = reveal;
       if (take > (int)sizeof(partial) - 1) take = (int)sizeof(partial) - 1;
       memcpy(partial, text, take);
       partial[take] = 0;
 
-      int n = wrapText(s, partial, rows, 5, SCR_W - 8);
-      int lh = s.fontHeight() + 3;
-      int y0 = (SCR_H - n * lh) / 2;
-      for (int i = 0; i < n; i++) s.drawString(rows[i], 5, y0 + i * lh);
+      s.setTextFont(1);
+      s.setTextSize(size);
+      s.setTextDatum(TL_DATUM);
+      s.setTextColor(ink, INK_OFF);
 
-      if (n > 0 && ((ageMs / 300) & 1) == 0) {
-        int cw = s.textWidth(rows[n - 1]);
-        s.fillRect(5 + cw + 2, y0 + (n - 1) * lh, 10, s.fontHeight(), INK_ON);
+      Layout P;
+      bool ovf = false;
+      P.nRows = wrapText(s, partial, P.rows, ROW_MAX, SCR_W - 10, &ovf);
+      P.lineH = L.lineH;
+
+      int y0 = (SCR_H - L.blockH) / 2;
+      for (int i = 0; i < P.nRows; i++)
+        s.drawString(P.rows[i], 5, y0 + i * P.lineH);
+
+      if (P.nRows > 0 && ((ageMs / 300) & 1) == 0) {
+        int cw = s.textWidth(P.rows[P.nRows - 1]);
+        s.fillRect(5 + cw + 2, y0 + (P.nRows - 1) * P.lineH,
+                   3 * size, s.fontHeight(), ink);
       }
       break;
     }
 
-    // Slams in inverted, then settles. Reads as an accent on the beat.
+    // Slams in inverted, then settles. Reads as an accent.
     case SC_FLASH: {
       bool flip = ageMs < 90 || (ageMs > 140 && ageMs < 200);
-      if (flip) { s.fillSprite(INK_ON); fg = INK_OFF; bg = INK_ON; }
+      uint16_t fg = flip ? INK_OFF : ink;
+      uint16_t bg = flip ? ink : INK_OFF;
+      if (flip) s.fillSprite(ink);
+      layoutFit(s, text, 1, SCR_W - 14, SCR_H - 16, 3, L);
+      applyLayout(s, 1, L);
       s.setTextDatum(MC_DATUM);
       s.setTextColor(fg, bg);
-      s.setTextFont(1);
-      s.setTextSize(2);
-      int n = wrapText(s, text, rows, 5, SCR_W - 10);
-      int lh = s.fontHeight() + 3;
-      int y0 = SCR_H / 2 - (n - 1) * lh / 2;
-      for (int i = 0; i < n; i++) s.drawString(rows[i], SCR_W / 2, y0 + i * lh);
+      int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
+      for (int i = 0; i < L.nRows; i++)
+        s.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
       break;
     }
 
-    // Heavy rules driving in from both edges, type held between them.
+    // Heavy rules driving in from opposite edges, type held between them.
     case SC_RULE: {
+      layoutFit(s, text, 1, SCR_W - 16, SCR_H - 40, 3, L);
+      applyLayout(s, 1, L);
       s.setTextDatum(MC_DATUM);
-      s.setTextColor(fg, bg);
-      s.setTextFont(1);
-      s.setTextSize(2);
-      int n = wrapText(s, text, rows, 4, SCR_W - 12);
-      int lh = s.fontHeight() + 3;
-      int blockH = n * lh;
-      int y0 = SCR_H / 2 - (n - 1) * lh / 2;
+      s.setTextColor(ink, INK_OFF);
+      int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
       int barW = (int)(in * SCR_W);
-      s.fillRect(0, SCR_H / 2 - blockH / 2 - 12, barW, 4, INK_ON);
-      s.fillRect(SCR_W - barW, SCR_H / 2 + blockH / 2 + 8, barW, 4, INK_ON);
-      for (int i = 0; i < n; i++) s.drawString(rows[i], SCR_W / 2, y0 + i * lh);
+      s.fillRect(0, SCR_H / 2 - L.blockH / 2 - 12, barW, 4, ink);
+      s.fillRect(SCR_W - barW, SCR_H / 2 + L.blockH / 2 + 8, barW, 4, ink);
+      for (int i = 0; i < L.nRows; i++)
+        s.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
       break;
     }
 
-    // A white card grows from the centre; type is knocked out of it.
+    // A card grows from the centre; type is knocked out of it.
     case SC_BOX: {
-      s.setTextFont(1);
-      s.setTextSize(2);
-      int n = wrapText(s, text, rows, 4, SCR_W - 20);
-      int lh = s.fontHeight() + 3;
-      int blockH = n * lh;
-      int boxH = blockH + 16;
+      layoutFit(s, text, 1, SCR_W - 24, SCR_H - 32, 3, L);
+      int boxH = L.blockH + 16;
       int h = (int)(in * boxH);
       int y = SCR_H / 2 - h / 2;
-      s.fillRect(0, y, SCR_W, h, INK_ON);
+      s.fillRect(0, y, SCR_W, h, ink);
       if (h >= boxH - 1) {
+        applyLayout(s, 1, L);
         s.setTextDatum(MC_DATUM);
-        s.setTextColor(INK_OFF, INK_ON);
-        int y0 = SCR_H / 2 - (n - 1) * lh / 2;
-        for (int i = 0; i < n; i++) s.drawString(rows[i], SCR_W / 2, y0 + i * lh);
+        s.setTextColor(INK_OFF, ink);
+        int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
+        for (int i = 0; i < L.nRows; i++)
+          s.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
       }
       break;
     }
 
-    // Line broken in two, halves arriving from opposite sides.
+    // Line broken in two, halves arriving from opposite sides. Each half is
+    // fitted independently so a lopsided split still fits.
     case SC_SPLIT: {
       int wc = wordCount(text);
-      int half = wc / 2;
-      char a[ROW_CHARS * 2] = {0}, b[ROW_CHARS * 2] = {0};
+      int half = (wc + 1) / 2;
+      char a[ROW_CHARS * 3] = {0}, b[ROW_CHARS * 3] = {0};
       char w[ROW_CHARS];
       for (int i = 0; i < wc; i++) {
         nthWord(text, i, w, sizeof(w));
@@ -317,14 +372,23 @@ void typeDraw(TFT_eSprite& s, const char* text,
         if (*dst) strncat(dst, " ", 2);
         strncat(dst, w, ROW_CHARS - 1);
       }
+
       s.setTextDatum(MC_DATUM);
-      s.setTextColor(fg, bg);
-      int szA = fitSize(s, a, 1, SCR_W - 8, 34, 4);
+      s.setTextColor(ink, INK_OFF);
       int offs = (int)((1.0f - in) * 130.0f);
-      s.drawString(a, SCR_W / 2 - offs, 46);
-      int szB = fitSize(s, b, 1, SCR_W - 8, 34, 4);
-      (void)szA; (void)szB;
-      s.drawString(b, SCR_W / 2 + offs, 84);
+
+      Layout A, B;
+      layoutFit(s, a, 1, SCR_W - 8, 54, 4, A);
+      applyLayout(s, 1, A);
+      int ay = 34 - (A.nRows - 1) * A.lineH / 2;
+      for (int i = 0; i < A.nRows; i++)
+        s.drawString(A.rows[i], SCR_W / 2 - offs, ay + i * A.lineH);
+
+      layoutFit(s, b, 1, SCR_W - 8, 54, 4, B);
+      applyLayout(s, 1, B);
+      int by = 92 - (B.nRows - 1) * B.lineH / 2;
+      for (int i = 0; i < B.nRows; i++)
+        s.drawString(B.rows[i], SCR_W / 2 + offs, by + i * B.lineH);
       break;
     }
 
@@ -336,33 +400,33 @@ void typeDraw(TFT_eSprite& s, const char* text,
 
 // ---------------------------------------------------------------- idle
 void typeDrawIdle(TFT_eSprite& s, const char* track, const char* artist,
-                  const char* status, uint32_t ms) {
+                  const char* status, uint32_t ms, uint16_t ink) {
   s.fillSprite(INK_OFF);
-  char rows[ROW_MAX][ROW_CHARS];
-
   s.setTextDatum(MC_DATUM);
-  s.setTextColor(INK_ON, INK_OFF);
+  s.setTextColor(ink, INK_OFF);
 
   if (track && *track) {
-    s.setTextFont(1);
-    s.setTextSize(2);
-    int n = wrapText(s, track, rows, 4, SCR_W - 8);
-    int lh = s.fontHeight() + 3;
-    int y0 = 52 - (n - 1) * lh / 2;
-    for (int i = 0; i < n; i++) s.drawString(rows[i], SCR_W / 2, y0 + i * lh);
+    Layout T;
+    layoutFit(s, track, 1, SCR_W - 10, 60, 3, T);
+    applyLayout(s, 1, T);
+    int y0 = 50 - (T.nRows - 1) * T.lineH / 2;
+    for (int i = 0; i < T.nRows; i++)
+      s.drawString(T.rows[i], SCR_W / 2, y0 + i * T.lineH);
 
-    s.fillRect(24, 84, 80, 2, INK_ON);
+    int ruleY = 50 + T.blockH / 2 + 8;
+    s.fillRect(24, ruleY, 80, 2, ink);
 
-    s.setTextFont(1);
-    s.setTextSize(1);
-    int na = wrapText(s, artist, rows, 2, SCR_W - 8);
-    for (int i = 0; i < na; i++) s.drawString(rows[i], SCR_W / 2, 96 + i * 10);
+    Layout A;
+    layoutFit(s, artist, 1, SCR_W - 10, 34, 1, A);
+    applyLayout(s, 1, A);
+    int ay = ruleY + 10;
+    for (int i = 0; i < A.nRows; i++)
+      s.drawString(A.rows[i], SCR_W / 2, ay + i * A.lineH);
   } else {
-    // No track: a slow blinking caret so the panel never looks dead.
     s.setTextFont(1);
     s.setTextSize(1);
     s.drawString(status ? status : "", SCR_W / 2, SCR_H / 2 - 10);
-    if (((ms / 500) & 1) == 0) s.fillRect(SCR_W / 2 - 5, SCR_H / 2 + 6, 10, 3, INK_ON);
+    if (((ms / 500) & 1) == 0) s.fillRect(SCR_W / 2 - 5, SCR_H / 2 + 6, 10, 3, ink);
   }
   s.setTextSize(1);
 }

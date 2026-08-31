@@ -279,7 +279,14 @@ void loop() {
 
   if (idx != lastLineIdx) {
     if (idx >= 0 && lyrics.text(idx)[0])
-      Serial.printf("[line %d] %s\n", idx, typeSceneName((uint32_t)idx + sceneSalt));
+    {
+      int fs, fr, fa; bool clipped;
+      typeLastFit(fs, fr, fa, clipped);
+      Serial.printf("[line %d] %-8s %3d chars  size %d/%d  %d rows%s\n",
+                    idx, typeSceneName((uint32_t)idx + sceneSalt),
+                    (int)strlen(lyrics.text(idx)), fs, fa, fr,
+                    clipped ? "   *** CLIPPED ***" : "");
+    }
     lastLineIdx = idx;
   }
 
