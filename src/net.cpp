@@ -22,6 +22,21 @@ static char     statusLine[48]   = "starting";
 static Preferences prefs;
 static String      refreshToken;
 
+String urlEncode(const char* s);
+
+// A Spotify refresh token is a long opaque string beginning "AQ". Pasting the
+// client ID or client secret here instead is an easy slip, and the only
+// symptom is a bare HTTP 400 from the token endpoint -- so say so plainly.
+static void warnIfNotRefreshToken(const String& t) {
+  if (t.length() >= 80 && t.startsWith("AQ")) return;
+  Serial.println("[spotify] WARNING: SPOTIFY_REFRESH_TOKEN does not look like a");
+  Serial.printf ("          refresh token (length %u, expected ~130 starting \"AQ\").\n",
+                 (unsigned)t.length());
+  Serial.println("          A 32-char hex value is your client ID or secret, not");
+  Serial.println("          the token. Re-run tools/spotify_auth.py and copy the");
+  Serial.println("          SPOTIFY_REFRESH_TOKEN line it prints.");
+}
+
 bool netEnabled() { return true; }
 
 static void setStatus(const char* s) {
@@ -49,6 +64,7 @@ static void loadRefreshToken() {
   } else {
     Serial.println("[spotify] refresh token loaded from NVS");
   }
+  warnIfNotRefreshToken(refreshToken);
 }
 
 static void saveRefreshToken(const char* t) {
@@ -80,7 +96,8 @@ static bool refreshAccessToken() {
 
   // PKCE refresh: client_id in the body, no Authorization header, no secret.
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  String body = "grant_type=refresh_token&refresh_token=" + refreshToken +
+  String body = "grant_type=refresh_token&refresh_token=" +
+                urlEncode(refreshToken.c_str()) +
                 "&client_id=" + String(SPOTIFY_CLIENT_ID);
 
   int code = http.POST(body);
@@ -88,13 +105,19 @@ static bool refreshAccessToken() {
     char buf[48];
     snprintf(buf, sizeof(buf), "token http %d", code);
     setStatus(buf);
-    // 400 means the stored token was rejected -- usually a rotation that did
-    // not get saved. Drop it so the next attempt falls back to the secrets.h
-    // seed rather than retrying a dead token forever.
-    if (code == 400) {
-      prefs.remove("refresh");
+    // Spotify explains itself in the body ("invalid_grant", "Refresh token
+    // revoked", ...). Printing it turns a bare 400 into something actionable;
+    // the response never echoes the token back.
+    Serial.printf("[spotify] token endpoint %d: %s\n", code,
+                  http.getString().c_str());
+    // 400 usually means a rotation that never got saved. Fall back to the
+    // seed -- but only if that is actually something different, otherwise we
+    // would just churn NVS retrying the same dead value.
+    if (code == 400 && refreshToken != SPOTIFY_REFRESH_TOKEN) {
+      if (prefs.isKey("refresh")) prefs.remove("refresh");
       refreshToken = SPOTIFY_REFRESH_TOKEN;
-      Serial.println("[spotify] stored refresh token rejected, reverting to seed");
+      Serial.println("[spotify] stored token rejected, reverting to secrets.h seed");
+      warnIfNotRefreshToken(refreshToken);
     }
     http.end();
     return false;
@@ -196,7 +219,7 @@ bool netPollSpotify(NowPlaying& out) {
 }
 
 // ------------------------------------------------------------------ lyrics
-static String urlEncode(const char* s) {
+String urlEncode(const char* s) {
   static const char* hex = "0123456789ABCDEF";
   String out;
   for (const char* p = s; *p; p++) {
