@@ -54,6 +54,14 @@ TLS validates against the Arduino core's root CA bundle
 (`setCACertBundle(rootca_crt_bundle_start)`), not `setInsecure()` — a refresh
 token crosses that connection.
 
+**Auth uses PKCE, so there is no client secret in this firmware.** A device
+that only reads playback state has no business carrying a secret that could be
+pulled out of its flash by anyone holding the board. The trade is that Spotify
+rotates the refresh token on every refresh, so the firmware persists each new
+one to NVS; the value in `secrets.h` is only a first-boot seed and going stale
+is expected. If a stored token is ever rejected (HTTP 400) it is dropped and
+the seed is retried, so the device recovers on its own.
+
 Without `src/secrets.h` the firmware still builds and runs, showing a demo
 sequence so every scene is visible.
 
@@ -93,15 +101,17 @@ rendering bug. Each frame gets its own `startWrite`/`endWrite` instead.
 ## Connecting Spotify
 
 1. Create an app at https://developer.spotify.com/dashboard and add
-   `http://127.0.0.1:8888/callback` as a Redirect URI.
-2. `python tools/spotify_auth.py` — authorises in your browser and prints a
-   refresh token. Runs entirely on your machine; nothing is sent anywhere but
-   Spotify, and the token is not written to disk.
-3. `cp src/secrets.h.example src/secrets.h`, fill in WiFi plus the three
-   Spotify values, reflash.
+   `http://127.0.0.1:8888/callback` as a Redirect URI. Enable **Web API**.
+   Copy the Client ID — the client secret is not needed and is not used.
+2. `python tools/spotify_auth.py` — authorises in your browser and prints the
+   two values to keep. Runs entirely on your machine; nothing is sent anywhere
+   but Spotify, and nothing is written to disk.
+3. `cp src/secrets.h.example src/secrets.h`, fill in WiFi plus the two Spotify
+   values, reflash.
 
 `src/secrets.h` is gitignored. Scopes requested are read-only
-(`user-read-currently-playing`, `user-read-playback-state`).
+(`user-read-currently-playing`, `user-read-playback-state`), and with PKCE
+there is no long-lived secret on the device at all.
 
 ## Controls
 

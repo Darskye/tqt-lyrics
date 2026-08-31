@@ -6,7 +6,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <mbedtls/base64.h>
+#include <Preferences.h>
 
 // Root CA bundle shipped with the Arduino core. If this symbol resolves we get
 // real certificate validation with nothing to maintain; see applyTls().
@@ -15,6 +15,12 @@ extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_star
 static char     accessToken[256] = {0};
 static uint32_t tokenExpiresAt   = 0;      // millis() deadline
 static char     statusLine[48]   = "starting";
+
+// PKCE means no client secret lives in this firmware. The trade is that
+// Spotify rotates the refresh token on every refresh, so the current one has
+// to survive reboots -- the value in secrets.h is only the first-boot seed.
+static Preferences prefs;
+static String      refreshToken;
 
 bool netEnabled() { return true; }
 
@@ -32,7 +38,28 @@ static void applyTls(WiFiClientSecure& c) {
   c.setTimeout(12000);
 }
 
+static void loadRefreshToken() {
+  prefs.begin("spotify", false);
+  // isKey() first: getString() on a missing key logs at ERROR level, which
+  // looks alarming on a perfectly normal first boot.
+  refreshToken = prefs.isKey("refresh") ? prefs.getString("refresh", "") : String();
+  if (refreshToken.isEmpty()) {
+    refreshToken = SPOTIFY_REFRESH_TOKEN;          // first boot: seed from secrets.h
+    Serial.println("[spotify] seeded refresh token from secrets.h");
+  } else {
+    Serial.println("[spotify] refresh token loaded from NVS");
+  }
+}
+
+static void saveRefreshToken(const char* t) {
+  if (!t || !*t || refreshToken == t) return;
+  refreshToken = t;
+  prefs.putString("refresh", refreshToken);
+  Serial.println("[spotify] refresh token rotated, saved to NVS");
+}
+
 void netBegin() {
+  loadRefreshToken();
   setStatus("wifi...");
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);                    // sleep adds latency to every poll
@@ -51,32 +78,32 @@ static bool refreshAccessToken() {
     return false;
   }
 
-  char creds[160];
-  snprintf(creds, sizeof(creds), "%s:%s", SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET);
-  unsigned char b64[256];
-  size_t b64Len = 0;
-  mbedtls_base64_encode(b64, sizeof(b64), &b64Len,
-                        (const unsigned char*)creds, strlen(creds));
-  b64[b64Len] = '\0';
-
-  char authHdr[300];
-  snprintf(authHdr, sizeof(authHdr), "Basic %s", (char*)b64);
-  http.addHeader("Authorization", authHdr);
+  // PKCE refresh: client_id in the body, no Authorization header, no secret.
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  String body = "grant_type=refresh_token&refresh_token=" + refreshToken +
+                "&client_id=" + String(SPOTIFY_CLIENT_ID);
 
-  String body = "grant_type=refresh_token&refresh_token=" + String(SPOTIFY_REFRESH_TOKEN);
   int code = http.POST(body);
   if (code != 200) {
     char buf[48];
     snprintf(buf, sizeof(buf), "token http %d", code);
     setStatus(buf);
+    // 400 means the stored token was rejected -- usually a rotation that did
+    // not get saved. Drop it so the next attempt falls back to the secrets.h
+    // seed rather than retrying a dead token forever.
+    if (code == 400) {
+      prefs.remove("refresh");
+      refreshToken = SPOTIFY_REFRESH_TOKEN;
+      Serial.println("[spotify] stored refresh token rejected, reverting to seed");
+    }
     http.end();
     return false;
   }
 
   JsonDocument filter;
-  filter["access_token"] = true;
-  filter["expires_in"]   = true;
+  filter["access_token"]  = true;
+  filter["expires_in"]    = true;
+  filter["refresh_token"] = true;
   JsonDocument doc;
   DeserializationError err =
       deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
@@ -87,6 +114,9 @@ static bool refreshAccessToken() {
   if (!tok) { setStatus("no token"); return false; }
   strncpy(accessToken, tok, sizeof(accessToken) - 1);
   accessToken[sizeof(accessToken) - 1] = '\0';
+
+  // Persist the rotated token before it is needed, not after.
+  saveRefreshToken(doc["refresh_token"] | (const char*)nullptr);
 
   uint32_t ttl = doc["expires_in"] | 3600;
   tokenExpiresAt = millis() + (ttl - 60) * 1000u;   // refresh a minute early
