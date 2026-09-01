@@ -38,6 +38,9 @@
 
 static TFT_eSPI    tft;
 static TFT_eSprite spr[2] = {TFT_eSprite(&tft), TFT_eSprite(&tft)};
+// 8bpp scratch the lyricform visualiser rasterises a line into, to harvest
+// its lit pixels as particle targets. Never displayed.
+static TFT_eSprite maskSpr = TFT_eSprite(&tft);
 static int         cur = 0;
 
 static bool     showStatus = false;
@@ -246,6 +249,10 @@ void setup() {
     Serial.printf("sprite[%d] @ %p  %s\n", i, p,
                   esp_ptr_external_ram(p) ? "PSRAM (slow!)" : "internal SRAM");
   }
+  maskSpr.setColorDepth(8);
+  if (!maskSpr.createSprite(SCR_W, SCR_H))
+    Serial.println("WARN: mask sprite alloc failed; lyricform will stay scattered");
+
   heap_caps_malloc_extmem_enable(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL);
 
   Serial.printf("free internal heap: %u bytes\n",
@@ -297,10 +304,19 @@ void loop() {
     int c = Serial.read();
     if      (c == 'r') { sceneSalt += 7; lastLineIdx = -2; }
     else if (c == 's') showStatus = !showStatus;
-    else if (c == 'm') { gMode = (gMode == MODE_LYRICS) ? MODE_VIZ : MODE_LYRICS; }
+    // 'm' toggles; 'V'/'L' set absolutely, so a test harness never has to
+    // guess which state a toggle landed in.
+    else if (c == 'm' || c == 'V' || c == 'L') {
+      if      (c == 'V') gMode = MODE_VIZ;
+      else if (c == 'L') gMode = MODE_LYRICS;
+      else               gMode = (gMode == MODE_LYRICS) ? MODE_VIZ : MODE_LYRICS;
+      Serial.printf("[mode] %s\n", gMode == MODE_VIZ ? "visuals" : "lyrics");
+    }
     else if (c == 'n') {
-      if (gMode == MODE_VIZ) gVizOverride = (gVizOverride + 1) % VIZ_COUNT;
-      else { sceneSalt += 7; gStylePending = true; }
+      if (gMode == MODE_VIZ) {
+        gVizOverride = (gVizOverride + 1) % VIZ_COUNT;
+        Serial.printf("[viz] %s (locked)\n", vizNameAt(gVizOverride));
+      } else { sceneSalt += 7; gStylePending = true; }
     }
     else if (c == 'A') { gVizOverride = -1; }
     else if (c == 'l') {
@@ -327,6 +343,31 @@ void loop() {
   int idx = (haveLyrics && !lyrics.empty()) ? lyrics.indexAt(posMs) : -1;
 
   bool showLyric = (gMode == MODE_LYRICS) && idx >= 0 && lyrics.text(idx)[0];
+
+  // Feed the lyricform visualiser. Done in either mode, since it is selectable
+  // as a visualiser: it assembles while a line is showing and scatters between
+  // lines. Rasterising happens only on a line change, not per frame.
+  {
+    static int morphLine = -2;
+    bool onLine = idx >= 0 && lyrics.text(idx)[0];
+    if (onLine && idx != morphLine) {
+      vizMorphSet(maskSpr, lyrics.text(idx));
+      morphLine = idx;
+    } else if (!onLine) {
+      morphLine = -2;
+    }
+    float m = 0.0f;
+    if (onLine) {
+      uint32_t st  = lyrics.timeAt(idx);
+      uint32_t nx  = (idx + 1 < lyrics.count()) ? lyrics.timeAt(idx + 1) : st + 4000;
+      uint32_t age = posMs > st ? posMs - st : 0;
+      uint32_t lft = nx > posMs ? nx - posMs : 0;
+      float rise = age / 420.0f; if (rise > 1.0f) rise = 1.0f;
+      float fall = lft / 420.0f; if (fall > 1.0f) fall = 1.0f;
+      m = rise < fall ? rise : fall;      // ease in at the start, out at the end
+    }
+    vizMorphAmount(m);
+  }
 
   if (showLyric) {
     uint32_t startMs = lyrics.timeAt(idx);

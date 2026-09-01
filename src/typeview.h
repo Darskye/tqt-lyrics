@@ -44,6 +44,11 @@ void typeDrawCard(TFT_eSprite& s, const char* track, const char* artist,
 void typeDrawNotes(TFT_eSprite& s, const char* track, const char* artist,
                    float tSec, uint32_t seed);
 
+// Lays a line out exactly as the lyric scenes would and rasterises it into an
+// 8bpp mask sprite. Returns the number of lit pixels, which the morph
+// visualiser harvests as particle targets.
+int typeRasterise(TFT_eSprite& mask, const char* text);
+
 const char* typeSceneName(uint32_t seed);
 const char* typeFaceName(uint32_t seed);
 uint16_t    typeInk(uint32_t seed);

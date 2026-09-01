@@ -11,7 +11,7 @@
 // Motion comes from playback position and a per-track seed -- real, but not
 // audio. Genuine reactivity needs an I2S mic on the breakout pads; see README.
 
-#define VIZ_COUNT 12
+#define VIZ_COUNT 13
 
 // Draws a full frame: the chosen visualiser, then track/artist and a seek bar
 // along the bottom over a darkened band.
@@ -24,6 +24,16 @@ void vizDraw(TFT_eSprite& s, int index, uint32_t seed, float tSec, float progres
 
 // Draws only the field, no text or seek bar -- used behind lyrics.
 void vizField(TFT_eSprite& s, int index, uint32_t seed, float tSec);
+
+// The "lyricform" visualiser: particles drift chaotically and assemble into
+// the current lyric line, then scatter again between lines.
+//
+// vizMorphSet rasterises a line into `mask` (an 8bpp scratch sprite) and
+// harvests its lit pixels as particle targets -- call it when the line
+// changes, not per frame. vizMorphAmount is the 0..1 assembly factor and is
+// cheap enough to set every frame.
+void vizMorphSet(TFT_eSprite& mask, const char* text);
+void vizMorphAmount(float m);
 
 int         vizIndexForSeed(uint32_t seed);
 const char* vizNameAt(int index);

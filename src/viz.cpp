@@ -84,13 +84,8 @@ static inline void hue2rgb(int h, int amp, int& r, int& g, int& b) {
 
 // Bilinear splat: particles glide at fractional coordinates instead of
 // stepping between whole pixels, which is what stops slow motion stuttering.
-static inline void splat(uint16_t* fb, float fx, float fy, int hue, int amp) {
+static inline void splatRGB(uint16_t* fb, float fx, float fy, int r, int g, int b) {
   if (fx < -1.0f || fy < -1.0f || fx > (float)SCR_W || fy > (float)SCR_H) return;
-  if (amp <= 0) return;
-  if (amp > 31) amp = 31;
-  int r, g, b;
-  hue2rgb(hue, amp, r, g, b);
-  g <<= 1;                                    // green has the extra bit
 
   int xi = (int)(fx + 256.0f) - 256;
   int yi = (int)(fy + 256.0f) - 256;
@@ -105,9 +100,18 @@ static inline void splat(uint16_t* fb, float fx, float fy, int hue, int amp) {
   addPix(fb, xi + 1, yi + 1, (r * w11) >> 5, (g * w11) >> 5, (b * w11) >> 5);
 }
 
+static inline void splat(uint16_t* fb, float fx, float fy, int hue, int amp) {
+  if (amp <= 0) return;
+  if (amp > 31) amp = 31;
+  int r, g, b;
+  hue2rgb(hue, amp, r, g, b);
+  splatRGB(fb, fx, fy, r, g << 1, b);
+}
+
 static const char* kNames[VIZ_COUNT] = {
   "spiral", "vortex", "starfield", "tunnel",  "rain",   "clifford",
-  "turbulence", "ripple", "dejong", "helix",  "swarm",  "bloom"
+  "turbulence", "ripple", "dejong", "helix",  "swarm",  "bloom",
+  "lyricform"
 };
 const char* vizNameAt(int i) { return kNames[((i % VIZ_COUNT) + VIZ_COUNT) % VIZ_COUNT]; }
 int vizIndexForSeed(uint32_t seed) { return (int)(mix(seed, 11) % VIZ_COUNT); }
@@ -349,6 +353,75 @@ static void fBloom(uint16_t* fb, float t, uint32_t sd) {
   }
 }
 
+
+// ---------------------------------------------------------------- lyricform
+// Particles drift chaotically and assemble into the current lyric line, then
+// scatter again between lines. Targets are the lit pixels of the line
+// rasterised offscreen, sampled evenly down to the particle count.
+#define MORPH_MAX 1100
+
+static int16_t g_mtx[MORPH_MAX], g_mty[MORPH_MAX];
+static int     g_mn = 0;
+static float   g_morph = 0.0f;
+
+void vizMorphAmount(float m) { g_morph = m < 0.0f ? 0.0f : (m > 1.0f ? 1.0f : m); }
+
+void vizMorphSet(TFT_eSprite& mask, const char* text) {
+  g_mn = 0;
+  int lit = typeRasterise(mask, text);
+  if (lit <= 0) return;
+
+  // Sample evenly rather than taking the first MORPH_MAX, which would fill
+  // only the top rows and leave the rest of the line unformed.
+  const uint8_t* p = (const uint8_t*)mask.getPointer();
+  int step = lit > MORPH_MAX ? lit / MORPH_MAX : 1;
+  int seen = 0;
+  for (int y = 0; y < SCR_H && g_mn < MORPH_MAX; y++) {
+    for (int x = 0; x < SCR_W && g_mn < MORPH_MAX; x++) {
+      if (!p[y * SCR_W + x]) continue;
+      if (seen % step == 0) { g_mtx[g_mn] = (int16_t)x; g_mty[g_mn] = (int16_t)y; g_mn++; }
+      seen++;
+    }
+  }
+}
+
+static void fMorph(uint16_t* fb, float t, uint32_t sd) {
+  const int N = MORPH_MAX;
+  float m = g_morph;
+  // Ease the assembly so particles arrive rather than snapping into place.
+  float e = m * m * (3.0f - 2.0f * m);
+
+  for (int i = 0; i < N; i++) {
+    uint32_t h = mix(sd ^ (uint32_t)i, 77);
+    float bx = (float)(h & 127), by = (float)((h >> 7) & 127);
+
+    // Chaotic home: a noise flow field, same family as the swarm.
+    float n1 = fbm(bx * 0.020f + t * 0.13f, by * 0.020f, sd);
+    float n2 = fbm(bx * 0.020f, by * 0.020f - t * 0.11f, sd ^ 0x77u);
+    float cx = bx + (n1 - 0.5f) * 54.0f;
+    float cy = by + (n2 - 0.5f) * 54.0f;
+
+    float px = cx, py = cy;
+    if (g_mn > 0 && e > 0.001f) {
+      int ti = i % g_mn;
+      px = cx + ((float)g_mtx[ti] - cx) * e;
+      py = cy + ((float)g_mty[ti] - cy) * e;
+    }
+
+    // Colour while scattered, white once formed: chaos gets to be colourful,
+    // but text has to be legible.
+    int amp = 9 + (int)(e * 20.0f);
+    int r, g, b;
+    hue2rgb((int)(n1 * 190.0f + t * 20.0f), amp, r, g, b);
+    g <<= 1;
+    int w2 = (int)(e * 32.0f);
+    r += ((amp - r) * w2) >> 5;
+    g += (((amp << 1) - g) * w2) >> 5;
+    b += ((amp - b) * w2) >> 5;
+    splatRGB(fb, px, py, r, g, b);
+  }
+}
+
 // ---------------------------------------------------------------- dispatch
 void vizField(TFT_eSprite& s, int index, uint32_t seed, float t) {
   trigInit();
@@ -365,7 +438,8 @@ void vizField(TFT_eSprite& s, int index, uint32_t seed, float t) {
     case 8:  fDeJong(fb, t, seed);     break;
     case 9:  fHelix(fb, t, seed);      break;
     case 10: fSwarm(fb, t, seed);      break;
-    default: fBloom(fb, t, seed);      break;
+    case 11: fBloom(fb, t, seed);      break;
+    default: fMorph(fb, t, seed);      break;
   }
 }
 

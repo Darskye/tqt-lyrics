@@ -903,3 +903,25 @@ void typeDrawNotes(TFT_eSprite& s, const char* track, const char* artist,
     s.drawString(buf, SCR_W / 2, SCR_H - 11);
   }
 }
+
+// ---------------------------------------------------------------- raster
+int typeRasterise(TFT_eSprite& mask, const char* text) {
+  mask.fillSprite(0);
+  if (!text || !*text) return 0;
+
+  // Same fitting rules as the scenes, so the formed text reads the same way.
+  Layout L;
+  layoutFit(mask, text, FACE_SANS, SCR_W - 8, SCR_H - 12, L);
+  applyRung(mask, L.rung);
+  mask.setTextDatum(MC_DATUM);
+  mask.setTextColor(TFT_WHITE);
+
+  int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
+  for (int i = 0; i < L.nRows; i++)
+    mask.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
+
+  const uint8_t* p = (const uint8_t*)mask.getPointer();
+  int lit = 0;
+  for (int k = 0; k < SCR_W * SCR_H; k++) if (p[k]) lit++;
+  return lit;
+}

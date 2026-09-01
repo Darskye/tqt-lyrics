@@ -76,6 +76,19 @@ colour gives far less variety than letting them blend.
 Hue is driven from radius, depth, noise value and time depending on the field,
 so the palette drifts continuously rather than sitting still.
 
+### lyricform
+
+Particles drift on a noise flow field and converge into the lyric line as it
+arrives, scattering again between lines. The line is rasterised offscreen into
+an 8bpp mask and its lit pixels become particle targets, sampled evenly down to
+the particle count -- taking the first N instead would fill only the top rows
+and leave the rest of the line unformed.
+
+Colour while scattered, white once assembled: chaos gets to be colourful, but
+text has to be legible.
+
+Rasterising happens on line change only, never per frame.
+
 ### They do not react to the audio
 
 There is no audio signal on this device. Spotify deprecated `/audio-features`
@@ -250,7 +263,8 @@ now: it shifts the seed, which changes scene and typeface together, so every
 press is a visible change. Measured: 8 presses gave 8 distinct scene/face
 pairings.
 | serial `m` | switch visuals <-> lyrics |
-| serial `n` | next visualiser |
+| serial `n` | next visualiser (visuals) / re-roll style (lyrics) |
+| serial `V` / `L` | set visuals / lyrics mode absolutely |
 | serial `A` | back to the per-track visualiser |
 | serial `s` | toggle status |
 | serial `o` | cycle panel rotation (prints the value for `SCREEN_ROTATION`) |
