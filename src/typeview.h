@@ -51,3 +51,6 @@ uint16_t    typeInk(uint32_t seed);
 // Result of the most recent fit: rows used, and whether even the smallest rung
 // failed to contain the text (should never be true).
 void typeLastFit(int& rows, bool& clipped);
+
+// The scene and typeface typeDraw actually resolved and drew.
+void typeLastDrawn(const char*& scene, const char*& face);

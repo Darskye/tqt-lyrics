@@ -56,6 +56,15 @@ static int gVizOverride   = -1;      // -1 = whichever the track hashes to
 static int gStyleOverride = -1;      // -1 = a different look every line
 static uint8_t  rotation = SCREEN_ROTATION;
 
+// Brief on-screen confirmation after a button press, so a press that does
+// nothing is distinguishable from a press that was never seen.
+static char     gToast[28] = {0};
+static uint32_t gToastUntil = 0;
+static void toast(const char* fmt, const char* arg) {
+  snprintf(gToast, sizeof(gToast), fmt, arg);
+  gToastUntil = millis() + 1400;
+}
+
 // ------------------------------------------------------------------ playback
 static Lyrics     lyrics;
 static NowPlaying np;
@@ -355,15 +364,24 @@ void loop() {
       uint32_t sd = (uint32_t)idx + sceneSalt;
       // Report the style actually drawn, not the one the seed would have
       // picked -- otherwise a locked style is invisible in the log.
-      const char* styleNm = (gStyleOverride >= 0) ? typeStyleName(gStyleOverride)
-                                                  : typeSceneName(sd);
+      const char* styleNm; const char* faceNm;
+      typeLastDrawn(styleNm, faceNm);
       Serial.printf("[line %d] %-8s %-8s %3d chars  %d rows%s%s\n",
-                    idx, styleNm, typeFaceName(sd),
+                    idx, styleNm, faceNm,
                     (int)strlen(lyrics.text(idx)), fr,
                     gStyleOverride >= 0 ? "  locked" : "",
                     clipped ? "   *** CLIPPED ***" : "");
     }
     lastLineIdx = idx;
+  }
+
+  if (gToast[0] && (int32_t)(millis() - gToastUntil) < 0) {
+    s.setTextFont(1);
+    s.setTextSize(1);
+    s.setTextDatum(TC_DATUM);
+    s.fillRect(0, 0, SCR_W, 11, INK_OFF);
+    s.setTextColor(INK_ON);
+    s.drawString(gToast, SCR_W / 2, 2);
   }
 
   if (showStatus) {

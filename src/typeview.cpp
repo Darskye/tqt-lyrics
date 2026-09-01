@@ -86,7 +86,16 @@ struct Layout {
 
 static int  g_lastRows = 0;
 static bool g_lastClipped = false;
+// What typeDraw actually resolved and drew, as opposed to what was requested.
+// Reporting the request cannot detect the request being ignored.
+static int  g_drawnScene = -1;
+static int  g_drawnFace  = -1;
 void typeLastFit(int& rows, bool& clipped) { rows = g_lastRows; clipped = g_lastClipped; }
+
+void typeLastDrawn(const char*& scene, const char*& face) {
+  scene = (g_drawnScene >= 0) ? kSceneNames[g_drawnScene] : "-";
+  face  = (g_drawnFace  >= 0) ? kFaces[g_drawnFace].name  : "-";
+}
 
 static float easeOutCubic(float t) {
   if (t < 0) t = 0;
@@ -276,11 +285,13 @@ void typeDraw(TFT_eSprite& s, const char* text,
   }
   const Face& face = *fp;
   uint16_t ink = typeInk(seed);
+  g_drawnFace = (int)(fp - kFaces);
 
   int wc = wordCount(text);
   if (sc == SC_HERO  && wc < 2) sc = SC_STACK;
   if (sc == SC_SPLIT && wc < 2) sc = SC_BOX;
   if (sc == SC_SCROLL && strlen(text) < 18) sc = SC_RULE;
+  g_drawnScene = (int)sc;
 
   float in = easeOutCubic((float)ageMs / 300.0f);
   Layout L;
