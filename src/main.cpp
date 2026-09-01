@@ -21,8 +21,8 @@
 #include "net.h"
 #include "viz.h"
 
-#define PIN_BTN_L  0    // re-roll the scene for the current line
-#define PIN_BTN_R  47   // toggle the status readout
+#define PIN_BTN_L  0    // cycle visualiser
+#define PIN_BTN_R  47   // toggle visuals <-> lyrics
 #define PIN_LCD_BL 10   // active low
 
 #define SPOTIFY_POLL_MS 5000
@@ -42,6 +42,13 @@ static int      fps = 0;
 // Per-track seed: picks which visualiser a song gets, and its character.
 // Derived from the Spotify track id so a given song always looks the same.
 static volatile uint32_t gTrackSeed = 0;
+
+// Right button toggles between the two; left button cycles visualiser.
+// MODE_LYRICS still falls back to the visualiser during gaps between lines,
+// so the panel is never empty.
+enum { MODE_LYRICS = 0, MODE_VIZ = 1 };
+static int gMode = MODE_LYRICS;
+static int gVizOverride = -1;        // -1 = whichever the track hashes to
 static uint8_t  rotation = SCREEN_ROTATION;
 
 // ------------------------------------------------------------------ playback
@@ -110,7 +117,7 @@ static void netTask(void*) {
             strncpy(loadedTrack, fresh.track, sizeof(loadedTrack) - 1);
             loadedTrack[sizeof(loadedTrack) - 1] = 0;
             gTrackSeed  = trackSeed(fresh.trackId);
-            Serial.printf("[viz] %s\n", vizName(gTrackSeed));
+            Serial.printf("[viz] %s\n", vizNameAt(vizIndexForSeed(gTrackSeed)));
             lastLineIdx = -2;
           }
           np = fresh;
@@ -236,8 +243,8 @@ void setup() {
   lyrics.parse(kDemoLrc);
   haveLyrics = true;
 
-  Serial.println("BTN_L (GPIO0) re-roll scene   BTN_R (GPIO47) status readout");
-  Serial.println("serial: r re-roll, s status, o rotate");
+  Serial.println("BTN_L (GPIO0) cycle visualiser   BTN_R (GPIO47) visuals <-> lyrics");
+  Serial.println("serial: m mode, n next viz, A auto viz, s status, o rotate");
 }
 
 // ------------------------------------------------------------------ loop
@@ -247,13 +254,22 @@ void loop() {
   static uint32_t drawAcc   = 0;
   static uint32_t demoStart = millis();
 
-  if (clicked(btnL)) { sceneSalt += 7; lastLineIdx = -2; }
-  if (clicked(btnR)) showStatus = !showStatus;
+  if (clicked(btnL)) {
+    gVizOverride = (gVizOverride + 1) % VIZ_COUNT;
+    Serial.printf("[viz] %s (locked)\n", vizNameAt(gVizOverride));
+  }
+  if (clicked(btnR)) {
+    gMode = (gMode == MODE_LYRICS) ? MODE_VIZ : MODE_LYRICS;
+    Serial.printf("[mode] %s\n", gMode == MODE_VIZ ? "visuals" : "lyrics");
+  }
 
   while (Serial.available()) {
     int c = Serial.read();
     if      (c == 'r') { sceneSalt += 7; lastLineIdx = -2; }
     else if (c == 's') showStatus = !showStatus;
+    else if (c == 'm') { gMode = (gMode == MODE_LYRICS) ? MODE_VIZ : MODE_LYRICS; }
+    else if (c == 'n') { gVizOverride = (gVizOverride + 1) % VIZ_COUNT; }
+    else if (c == 'A') { gVizOverride = -1; }
     else if (c == 'l') {
       // Force a lyrics re-fetch on the next poll by forgetting which track is
       // loaded. Makes the LRCLIB path testable without changing songs.
@@ -277,7 +293,9 @@ void loop() {
 
   int idx = (haveLyrics && !lyrics.empty()) ? lyrics.indexAt(posMs) : -1;
 
-  if (idx >= 0 && lyrics.text(idx)[0]) {
+  bool showLyric = (gMode == MODE_LYRICS) && idx >= 0 && lyrics.text(idx)[0];
+
+  if (showLyric) {
     uint32_t startMs = lyrics.timeAt(idx);
     uint32_t nextMs  = (idx + 1 < lyrics.count()) ? lyrics.timeAt(idx + 1)
                                                   : startMs + 4000;
@@ -285,10 +303,11 @@ void loop() {
     uint32_t hold = nextMs > startMs ? nextMs - startMs : 3000;
     typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt);
   } else if (live) {
-    // Paused, between lines, or no lyrics for this track: run the visualiser
-    // with the seek bar and track details along the bottom.
+    // Visuals mode, or a gap between lyric lines: run the visualiser with the
+    // seek bar and track details along the bottom.
+    int vi = (gVizOverride >= 0) ? gVizOverride : vizIndexForSeed(gTrackSeed);
     float prog = np.durationMs ? (float)posMs / (float)np.durationMs : 0.0f;
-    vizDraw(s, gTrackSeed + sceneSalt, (float)millis() * 0.001f, prog,
+    vizDraw(s, vi, gTrackSeed, (float)millis() * 0.001f, prog,
             np.track, np.artist);
   } else {
     // Nothing playing at all -- no track, no progress to show.

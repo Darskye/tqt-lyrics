@@ -35,39 +35,47 @@ errors.
 
 ## Visualisers
 
-Whenever there is no lyric on screen -- paused, between lines, or a track with
-no synced lyrics -- one of six particle visualisers runs, with the track,
-artist and a seek bar along the bottom over a darkened band.
+Twelve white particle fields. Which one a song gets comes from an FNV-1a hash
+of its Spotify track id, so every track has its own and keeps it.
 
-| visualiser | what it does |
-|---|---|
-| spiral | phyllotaxis field at the golden angle, rotating so the arms swirl inward |
-| starfield | particles accelerating outward from centre, respawning at the middle |
-| rain | columns of falling pixels at independent speeds, brightest at the head |
-| orbits | concentric rings each turning at its own rate, shearing into arms |
-| wave | a lattice displaced by two crossing travelling waves |
-| bloom | rings expanding from centre and fading, staggered so one always arrives |
+| | | |
+|---|---|---|
+| spiral | phyllotaxis at the golden angle, arms swirling inward | 131 fps |
+| vortex | particles draining inward, turning faster as they close | 129 fps |
+| starfield | perspective stars accelerating outward | 110 fps |
+| tunnel | rings receding down a twisting corridor | 115 fps |
+| rain | columns falling at independent speeds, bright at the head | 122 fps |
+| orbits | concentric rings shearing into moving arms | 118 fps |
+| lattice | a 30x30 grid breathing under crossing waves | 116 fps |
+| ripple | interference of three moving wavefronts | 97 fps |
+| lissajous | a dense curve whose frequency ratio drifts | 112 fps |
+| helix | two counter-rotating strands seen side-on | 118 fps |
+| swarm | particles advected by a turning flow field | 109 fps |
+| bloom | staggered rings expanding and fading | 113 fps |
 
-Which one a song gets is picked from a FNV-1a hash of its Spotify track id, so
-every track has its own visualiser and character, and the same track always
-looks the same.
+Everything is white. Brightness is not colour here, it is coverage and depth,
+which is what keeps a dense field readable instead of a solid blob.
 
-### It does not react to the audio, and does not pretend to
+**Sub-pixel splatting is the quality difference.** Particles are drawn at
+fractional coordinates with bilinear weights and accumulate additively, so they
+glide rather than step and overlapping points build up. Integer plotting made
+slow motion look like a stutter.
 
-There is no audio signal available on this device. Spotify deprecated
-`/audio-features` and `/audio-analysis` in November 2024; this app returns
-**403** from both, verified against the live API rather than assumed. The board
-has no microphone. So there is no beat, tempo or loudness to react to.
+**Build with `-ffast-math`.** Without it `sqrtf` compiles to a libm call with
+errno handling rather than the FPU instruction, and the fields that use it pay
+for it badly: spiral went 1.77ms -> 0.16ms and ripple 7.31ms -> 2.90ms just
+from that flag plus a coarser ripple grid.
 
-What actually drives the motion is real, just not audio:
+### They do not react to the audio
 
-- **Playback position**, so the seek bar is genuinely accurate and motion
-  advances with the song
-- **A per-track seed**, so songs differ from each other consistently
+There is no audio signal on this device. Spotify deprecated `/audio-features`
+and `/audio-analysis` in November 2024; this app returns **403** from both,
+verified with an on-device probe against the live API. The board has no
+microphone. Motion comes from playback position and the per-track seed -- real,
+but not audio. The seek bar, by contrast, is genuinely accurate.
 
-Genuine reactivity needs an I2S microphone (an INMP441 or similar, a few
-dollars) on the breakout pads, feeding an FFT for real onset detection. That is
-the only honest route to it -- no API will provide it.
+Real reactivity needs an I2S microphone (an INMP441, a few dollars) on the
+breakout pads feeding an FFT. No API will provide it.
 
 ## Scenes
 
@@ -195,9 +203,11 @@ there is no long-lived secret on the device at all.
 
 | input | action |
 |---|---|
-| GPIO 0 button | re-roll the scene for the current line |
-| GPIO 47 button | toggle the status readout |
-| serial `r` | re-roll scene |
+| GPIO 0 button | cycle through the visualisers |
+| GPIO 47 button | switch visuals <-> lyrics |
+| serial `m` | switch visuals <-> lyrics |
+| serial `n` | next visualiser |
+| serial `A` | back to the per-track visualiser |
 | serial `s` | toggle status |
 | serial `o` | cycle panel rotation (prints the value for `SCREEN_ROTATION`) |
 
