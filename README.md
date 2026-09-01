@@ -45,10 +45,8 @@ of its Spotify track id, so every track has its own and keeps it.
 | starfield | perspective stars drifting off-axis, each its own hue | 102 |
 | tunnel | a corridor whose rings buckle instead of staying circular | 97 |
 | rain | columns swaying on a noise field, hue shifting down their length | 110 |
-| **clifford** | chaotic attractor, parameters drifting so it never recycles | 95 |
 | **turbulence** | pure fractal noise, no geometry at all | 75 |
 | ripple | interference from sources wandering on noise paths | 93 |
-| **dejong** | the other classic chaotic map, lacier than Clifford | 90 |
 | helix | two strands frayed by noise rather than drawn as a diagram | 102 |
 | swarm | particles advected by a fractal flow field | 75 |
 | bloom | ragged shockwaves from wandering centres | 97 |
@@ -75,6 +73,22 @@ colour gives far less variety than letting them blend.
 
 Hue is driven from radius, depth, noise value and time depending on the field,
 so the palette drifts continuously rather than sitting still.
+
+### fire and boids
+
+Fire simulates a heat buffer at 64x64 and interpolates it up to the panel:
+softer and more liquid than simulating at full resolution, and a quarter of the
+cost. Squaring the noise at the base digs cool gaps between hot columns --
+a uniform base rises as a flat sheet, and the gaps are what make flames read as
+tongues rather than a wash.
+
+Boids run the usual separation / alignment / cohesion over a slow noise field
+so the flock keeps wandering. Two things learned tuning it: hue has to come
+from the **bird**, not its heading, because a flock aligns and heading-hue
+collapses the whole flock to one colour; and the birds are drawn as sub-pixel
+splats, not anti-aliased capsules. A capsule costs ~160 pixel ops with a sqrt
+each, and at five pixels a bird that detail is invisible -- swapping them took
+this field from 55-70 fps to 94-105.
 
 ### matrix
 

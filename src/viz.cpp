@@ -109,9 +109,8 @@ static inline void splat(uint16_t* fb, float fx, float fy, int hue, int amp) {
 }
 
 static const char* kNames[VIZ_COUNT] = {
-  "spiral", "vortex", "starfield", "tunnel",  "rain",   "clifford",
-  "turbulence", "ripple", "dejong", "helix",  "swarm",  "bloom",
-  "matrix"
+  "spiral", "vortex", "starfield", "tunnel", "rain",  "turbulence",
+  "ripple", "helix",  "swarm",     "bloom",  "matrix", "fire", "boids"
 };
 const char* vizNameAt(int i) { return kNames[((i % VIZ_COUNT) + VIZ_COUNT) % VIZ_COUNT]; }
 int vizIndexForSeed(uint32_t seed) { return (int)(mix(seed, 11) % VIZ_COUNT); }
@@ -213,26 +212,6 @@ static void fRain(uint16_t* fb, float t, uint32_t sd) {
   }
 }
 
-// Clifford attractor. Genuinely chaotic rather than merely irregular: the
-// parameters drift, so the structure keeps folding into shapes it has not
-// held before instead of cycling.
-static void fClifford(uint16_t* fb, float t, uint32_t sd) {
-  const int N = 2200;
-  float a = -1.7f + 0.45f * fsin(t * 0.11f + (mix(sd, 6) % 100) * 0.06f);
-  float b =  1.8f + 0.40f * fcos(t * 0.083f);
-  float c = -1.9f + 0.35f * fsin(t * 0.061f + 1.7f);
-  float d = -0.8f + 0.40f * fcos(t * 0.047f + 0.6f);
-  float x = 0.1f, y = 0.0f;
-  int hue0 = (int)(t * 20.0f);
-  for (int i = 0; i < N; i++) {
-    float nx = fsin(a * y) + c * fcos(a * x);
-    float ny = fsin(b * x) + d * fcos(b * y);
-    x = nx; y = ny;
-    if (i < 24) continue;                       // let the orbit settle
-    splat(fb, 64.0f + x * 25.0f, 64.0f + y * 25.0f,
-          hue0 + (int)((x + y) * 26.0f), 11);
-  }
-}
 
 // Pure fractal noise, rendered as a field of coloured motes drifting through
 // it. No geometry at all -- the least "designed"-looking of the set.
@@ -273,25 +252,6 @@ static void fRipple(uint16_t* fb, float t, uint32_t sd) {
   }
 }
 
-// De Jong attractor: the other classic chaotic map, denser and lacier than
-// Clifford, and it folds differently as the parameters drift.
-static void fDeJong(uint16_t* fb, float t, uint32_t sd) {
-  const int N = 2400;
-  float a = 1.64f + 0.55f * fsin(t * 0.071f + (mix(sd, 9) % 100) * 0.06f);
-  float b = 1.90f + 0.50f * fcos(t * 0.059f);
-  float c = 0.90f + 0.60f * fsin(t * 0.043f + 2.2f);
-  float d = 1.10f + 0.55f * fcos(t * 0.037f + 1.1f);
-  float x = 0.05f, y = 0.12f;
-  int hue0 = (int)(t * 24.0f);
-  for (int i = 0; i < N; i++) {
-    float nx = fsin(a * y) - fcos(b * x);
-    float ny = fsin(c * x) - fcos(d * y);
-    x = nx; y = ny;
-    if (i < 24) continue;
-    splat(fb, 64.0f + x * 29.0f, 64.0f + y * 29.0f,
-          hue0 + (int)((x - y) * 30.0f), 10);
-  }
-}
 
 // Two strands, noise-perturbed so they fray rather than reading as a diagram.
 static void fHelix(uint16_t* fb, float t, uint32_t sd) {
@@ -353,6 +313,175 @@ static void fBloom(uint16_t* fb, float t, uint32_t sd) {
   }
 }
 
+
+static inline uint16_t rgb16(int r, int g, int b) {
+  if (r < 0) r = 0;
+  if (r > 255) r = 255;
+  if (g < 0) g = 0;
+  if (g > 255) g = 255;
+  if (b < 0) b = 0;
+  if (b > 255) b = 255;
+  return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+}
+
+// ---------------------------------------------------------------- fire
+// Heat buffer at half resolution, upscaled bilinearly. Simulating at 64x64 and
+// interpolating up looks softer and more liquid than simulating at full res,
+// and costs a quarter as much.
+#define FW 64
+#define FH 64
+static uint8_t g_heat[FW * FH];
+
+static uint16_t firePal(int h) {
+  if (h <= 0) return 0;
+  if (h < 70)  return rgb16(h * 255 / 70, 0, h / 6);
+  if (h < 130) return rgb16(255, (h - 70) * 130 / 60, 0);
+  if (h < 200) return rgb16(255, 130 + (h - 130) * 90 / 70, (h - 130) * 40 / 70);
+  return rgb16(255, 220 + (h - 200) * 35 / 55, 40 + (h - 200) * 180 / 55);
+}
+
+static void fFire(uint16_t* fb, float t, uint32_t sd, bool reset) {
+  if (reset) memset(g_heat, 0, sizeof(g_heat));
+
+  // A wandering hot band rather than uniform noise at the base: that is what
+  // gives the slow lava roll instead of a flat sheet of flame.
+  for (int x = 0; x < FW; x++) {
+    float bias = fbm((float)x * 0.05f, t * 0.35f, sd);
+    uint32_t h = mix(sd ^ (uint32_t)x, (uint32_t)(t * 30.0f));
+    // Squaring the bias digs cool gaps between hot columns. A uniform base
+    // rises as a flat sheet; the gaps are what make flames read as tongues.
+    int v = 30 + (int)(bias * bias * 240.0f) + (int)(h & 25);
+    if (v > 255) v = 255;
+    g_heat[(FH - 1) * FW + x] = (uint8_t)v;
+    g_heat[(FH - 2) * FW + x] = (uint8_t)(v * 3 / 4);
+  }
+
+  // Rows are written top-down while reading the rows below, which still hold
+  // last frame values. That lag is what makes the heat climb.
+  for (int y = 0; y < FH - 2; y++) {
+    uint8_t* dst = g_heat + y * FW;
+    const uint8_t* a = g_heat + (y + 1) * FW;
+    const uint8_t* b = g_heat + (y + 2) * FW;
+    for (int x = 0; x < FW; x++) {
+      int xl = (x + FW - 1) & (FW - 1), xr = (x + 1) & (FW - 1);
+      int sum = a[xl] + a[x] + a[xr] + b[x];
+      int cool = 1 + (int)(mix((uint32_t)(x * 31 + y * 17),
+                               (uint32_t)(t * 21.0f)) & 5);
+      int v = (sum >> 2) - cool;
+      dst[x] = v < 0 ? 0 : (uint8_t)v;
+    }
+  }
+
+  for (int y = 0; y < SCR_H; y++) {
+    float sy = (float)y * (FH - 1) / (float)(SCR_H - 1);
+    int y0 = (int)sy;
+    int y1 = (y0 + 1 < FH) ? y0 + 1 : y0;
+    float fy = sy - (float)y0;
+    const uint8_t* r0 = g_heat + y0 * FW;
+    const uint8_t* r1 = g_heat + y1 * FW;
+    uint16_t* out = fb + y * SCR_W;
+    for (int x = 0; x < SCR_W; x++) {
+      float sx = (float)x * (FW - 1) / (float)(SCR_W - 1);
+      int x0 = (int)sx;
+      int x1 = (x0 + 1 < FW) ? x0 + 1 : x0;
+      float fx = sx - (float)x0;
+      float top = (float)r0[x0] + ((float)r0[x1] - (float)r0[x0]) * fx;
+      float bot = (float)r1[x0] + ((float)r1[x1] - (float)r1[x0]) * fx;
+      out[x] = firePal((int)(top + (bot - top) * fy));
+    }
+  }
+}
+
+// ---------------------------------------------------------------- boids
+#define NBOID 90
+static float g_bx[NBOID], g_by[NBOID], g_bvx[NBOID], g_bvy[NBOID];
+
+static void fBoids(uint16_t* fb, float t, uint32_t sd, bool reset, float dt) {
+  if (reset) {
+    for (int i = 0; i < NBOID; i++) {
+      uint32_t h = mix(sd ^ (uint32_t)i, 131);
+      g_bx[i] = (float)(h & 127);
+      g_by[i] = (float)((h >> 7) & 127);
+      float a = (float)((h >> 14) & 1023) * (TAU / 1024.0f);
+      g_bvx[i] = fcos(a) * 26.0f;
+      g_bvy[i] = fsin(a) * 26.0f;
+    }
+  }
+
+  for (int i = 0; i < NBOID; i++) {
+    float sx = 0, sy = 0, ax = 0, ay = 0, cx = 0, cy = 0;
+    int nNear = 0, nSep = 0;
+    // Cap the neighbours considered. The full O(N^2) scan costs most exactly
+    // when the flock tightens -- more pairs fall inside the radius -- so the
+    // framerate dipped hardest at the most interesting moment. Capping makes
+    // the cost near-constant. The scan starts at a different neighbour for
+    // each bird so the sample is not always the same subset.
+    for (int k = 1; k < NBOID && nNear < 14; k++) {
+      int j = i + k;
+      if (j >= NBOID) j -= NBOID;
+      float dx = g_bx[j] - g_bx[i], dy = g_by[j] - g_by[i];
+      float d2 = dx * dx + dy * dy;
+      if (d2 > 900.0f) continue;
+      cx += g_bx[j];  cy += g_by[j];
+      ax += g_bvx[j]; ay += g_bvy[j];
+      nNear++;
+      if (d2 < 64.0f && d2 > 0.01f) {
+        sx -= dx / d2; sy -= dy / d2;
+        nSep++;
+      }
+    }
+    if (nNear) {
+      cx = cx / (float)nNear - g_bx[i];
+      cy = cy / (float)nNear - g_by[i];
+      ax = ax / (float)nNear - g_bvx[i];
+      ay = ay / (float)nNear - g_bvy[i];
+      g_bvx[i] += cx * 0.55f * dt + ax * 1.5f * dt;
+      g_bvy[i] += cy * 0.55f * dt + ay * 1.5f * dt;
+    }
+    if (nSep) {
+      g_bvx[i] += sx * 260.0f * dt;
+      g_bvy[i] += sy * 260.0f * dt;
+    }
+    // A slow noise field underneath keeps the flock wandering rather than
+    // settling into one steady orbit.
+    float w = fbm(g_bx[i] * 0.02f, g_by[i] * 0.02f + t * 0.2f, sd) * TAU;
+    g_bvx[i] += fcos(w) * 22.0f * dt;
+    g_bvy[i] += fsin(w) * 22.0f * dt;
+
+    float sp = sqrtf(g_bvx[i] * g_bvx[i] + g_bvy[i] * g_bvy[i]);
+    if (sp < 0.001f) sp = 0.001f;
+    g_bvx[i] = g_bvx[i] / sp * 34.0f;
+    g_bvy[i] = g_bvy[i] / sp * 34.0f;
+
+    g_bx[i] += g_bvx[i] * dt;
+    g_by[i] += g_bvy[i] * dt;
+    if (g_bx[i] < -6.0f) g_bx[i] += 140.0f; else if (g_bx[i] > 134.0f) g_bx[i] -= 140.0f;
+    if (g_by[i] < -6.0f) g_by[i] += 140.0f; else if (g_by[i] > 134.0f) g_by[i] -= 140.0f;
+  }
+
+  for (int i = 0; i < NBOID; i++) {
+    float sp = sqrtf(g_bvx[i] * g_bvx[i] + g_bvy[i] * g_bvy[i]);
+    if (sp < 0.001f) sp = 0.001f;
+    float ux = g_bvx[i] / sp, uy = g_bvy[i] / sp;
+    // A chevron rather than a dot: swept-back wings show heading, which is
+    // what makes a flock legible at five pixels a bird.
+    float nx = -uy, ny = ux;
+    float tx = g_bx[i] + ux * 3.4f,  ty = g_by[i] + uy * 3.4f;
+    float lx = g_bx[i] - ux * 2.0f + nx * 2.6f, ly = g_by[i] - uy * 2.0f + ny * 2.6f;
+    float rx = g_bx[i] - ux * 2.0f - nx * 2.6f, ry = g_by[i] - uy * 2.0f - ny * 2.6f;
+    // Hue per bird rather than per heading: a flock aligns, so colouring by
+    // direction turns the whole flock one colour.
+    int hue = (int)(mix(sd ^ (uint32_t)i, 517) % 192) + (int)(t * 9.0f);
+    // Sub-pixel splats rather than AA capsules. A capsule costs ~160 pixel
+    // ops with a sqrt each; at five pixels a bird that detail is invisible,
+    // and 180 of them a frame was the whole cost of this field.
+    splat(fb, tx, ty, hue, 30);
+    splat(fb, (tx + lx) * 0.5f, (ty + ly) * 0.5f, hue, 26);
+    splat(fb, lx, ly, hue, 20);
+    splat(fb, (tx + rx) * 0.5f, (ty + ry) * 0.5f, hue, 26);
+    splat(fb, rx, ry, hue, 20);
+  }
+}
 
 // ---------------------------------------------------------------- matrix
 // Half-width katakana, drawn as 8x8 bitmaps rather than typed. TFT_eSPI's
@@ -462,20 +591,33 @@ static void fMatrix(uint16_t* fb, float t, uint32_t sd) {
 void vizField(TFT_eSprite& s, int index, uint32_t seed, float t) {
   trigInit();
   uint16_t* fb = (uint16_t*)s.getPointer();
-  switch (((index % VIZ_COUNT) + VIZ_COUNT) % VIZ_COUNT) {
+  int idx = ((index % VIZ_COUNT) + VIZ_COUNT) % VIZ_COUNT;
+
+  // The closed-form fields are pure functions of t, but fire, boids, face and
+  // runner carry state: they need a real dt to stay frame-rate independent,
+  // and a reset when switched to, or they inherit whatever the last one left.
+  static float lastT = 0.0f;
+  static int   lastIdx = -1;
+  float dt = t - lastT;
+  lastT = t;
+  if (dt <= 0.0f || dt > 0.25f) dt = 0.016f;
+  bool reset = (idx != lastIdx);
+  lastIdx = idx;
+
+  switch (idx) {
     case 0:  fSpiral(fb, t, seed);     break;
     case 1:  fVortex(fb, t, seed);     break;
     case 2:  fStarfield(fb, t, seed);  break;
     case 3:  fTunnel(fb, t, seed);     break;
     case 4:  fRain(fb, t, seed);       break;
-    case 5:  fClifford(fb, t, seed);   break;
-    case 6:  fTurbulence(fb, t, seed); break;
-    case 7:  fRipple(fb, t, seed);     break;
-    case 8:  fDeJong(fb, t, seed);     break;
-    case 9:  fHelix(fb, t, seed);      break;
-    case 10: fSwarm(fb, t, seed);      break;
-    case 11: fBloom(fb, t, seed);      break;
-    default: fMatrix(fb, t, seed);     break;
+    case 5:  fTurbulence(fb, t, seed); break;
+    case 6:  fRipple(fb, t, seed);     break;
+    case 7:  fHelix(fb, t, seed);      break;
+    case 8:  fSwarm(fb, t, seed);      break;
+    case 9:  fBloom(fb, t, seed);      break;
+    case 10: fMatrix(fb, t, seed);     break;
+    case 11: fFire(fb, t, seed, reset);      break;
+    default: fBoids(fb, t, seed, reset, dt); break;
   }
 }
 
