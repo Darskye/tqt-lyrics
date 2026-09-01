@@ -1,11 +1,16 @@
 # tqt-lyrics
 
-Spotify lyrics as the whole picture, on a LilyGo T-QT Pro (ESP32-S3FN4R2,
-0.85" 128x128). Stark monochrome kinetic typography — no background layer, no
-colour. Every scene owns the entire frame.
+Time-synced Spotify lyrics and a set of generative visualisers on a LilyGo
+T-QT Pro — an ESP32-S3 with a 0.85", 128x128 colour panel.
 
-Measured on hardware: **114–129 fps**, 0.27–1.31 ms of drawing per frame.
+Two modes, switched with the right-hand button:
 
+- **Lyrics** — one line at a time, in stark white kinetic typography. 18
+  animation styles across 5 typefaces, a different pairing every line.
+- **Visuals** — 13 colour particle fields, one assigned to each track.
+
+Measured on hardware: lyrics run at ~120 fps, the visualisers at 75–124 fps
+depending on the field.
 
 ## What it looks like
 
@@ -23,121 +28,85 @@ Captured off the device itself over serial, not mocked up.
 The lyric shots use the built-in demo text rather than a real song, so the
 images do not reproduce anyone's lyrics.
 
-## The idea
+## What you need
 
-At roughly 16 characters per row there is no room for a lyric sheet, so this
+- A **LilyGo T-QT Pro** (ESP32-S3FN4R2 — 4 MB flash, 2 MB PSRAM)
+- A **Spotify account**. Free works; you only need playback state.
+- **2.4 GHz WiFi.** The ESP32 has no 5 GHz radio, and this is the most common
+  reason a board silently fails to join.
+- Python with [PlatformIO](https://platformio.org/): `pip install platformio`
+
+## Build
+
+```
+python -m platformio run -t upload
+python -m platformio device monitor
+```
+
+It builds and runs without credentials, showing a demo sequence so every
+lyric style is visible. Connect Spotify when you want it to follow real music.
+
+## Connecting Spotify
+
+1. Create an app at <https://developer.spotify.com/dashboard>, add
+   `http://127.0.0.1:8888/callback` as a Redirect URI, and enable **Web API**.
+   Copy the Client ID — the client secret is neither needed nor used.
+2. Run `python tools/spotify_auth.py`. It authorises in your browser and offers
+   to write the values straight into `src/secrets.h`. Everything happens on
+   your machine; nothing is sent anywhere but Spotify.
+3. Add your WiFi details to `src/secrets.h` and reflash.
+
+`src/secrets.h` is gitignored. The scopes requested are read-only
+(`user-read-currently-playing`, `user-read-playback-state`).
+
+**Auth uses PKCE, so there is no client secret in the firmware.** A device that
+only reads playback state has no business carrying a secret that could be
+pulled out of its flash by anyone holding the board. The trade is that Spotify
+rotates the refresh token on every refresh, so the firmware persists each new
+one to NVS — the value in `secrets.h` is only a first-boot seed, and it going
+stale is expected. A rejected token is dropped and the seed retried, so the
+device recovers on its own.
+
+## Controls
+
+| input | action |
+|---|---|
+| **right button** (GPIO 47) | switch visuals ⇄ lyrics |
+| **left button** (GPIO 0) | lyrics: re-roll the current line's look · visuals: next visualiser |
+
+In lyrics mode the left button shifts the seed, which changes scene *and*
+typeface together, so every press is a visible change on the line in front of
+you.
+
+Over serial:
+
+| key | action |
+|---|---|
+| `V` / `L` | set visuals / lyrics mode absolutely |
+| `m` | toggle mode |
+| `n` | next visualiser (visuals) · re-roll style (lyrics) |
+| `A` | back to the per-track visualiser |
+| `s` | toggle the status readout |
+| `o` | cycle panel rotation, printing the value for `SCREEN_ROTATION` |
+| `l` | force a lyrics re-fetch |
+| `F` | dump the last frame as hex, to reconstruct off-device |
+
+The panel mounts upside down relative to TFT_eSPI's rotation 0, so
+`SCREEN_ROTATION` in `src/main.cpp` defaults to **2**. If yours differs, press
+`o` until it looks right and put that number in the define.
+
+## Lyrics mode
+
+At roughly 16 characters per row there is no space for a lyric sheet, so this
 does not try to be one. It shows one line at a time and lets the *presentation*
-carry it: scale, motion, inversion and layout instead of colour.
+carry it.
 
-## Colour and type
+Scene and typeface are both drawn from the line index, independently, so they
+change together but never in lockstep. Five families rotate — **sans, serif,
+mono, oblique** and the built-in **pixel** cell — each a ladder of faces from
+24pt down to the 6x8 GLCD cell.
 
-Each line gets its own **colour** and its own **typeface**, drawn independently
-from the line index so they change together but never in lockstep.
-
-Colour comes from a curated set of twelve high-value inks rather than a random
-RGB triple: arbitrary values land on muddy or too-dark colours often enough to
-matter on a black field.
-
-Five type families are in rotation -- **sans, serif, mono, oblique** and the
-built-in **pixel** cell. Each is a ladder of faces from 24pt down, ending at the
-6x8 GLCD cell. `layoutFit()` walks the ladder and takes the first rung where the
-whole line fits, so a long line simply arrives in a smaller face instead of
-being clipped. The last rung is accepted unconditionally as the floor: 21
-columns by 16 rows holds ~330 characters, longer than any lyric line.
-
-The free fonts come with TFT_eSPI itself -- `Fonts/GFXFF/gfxfont.h` is an
-aggregator that includes the whole set. Do not `#include` individual font
-headers on top of that: they carry no include guards and you get redefinition
-errors.
-
-## Visualisers
-
-Twelve chaotic colour fields. Which one a song gets comes from an FNV-1a hash
-of its Spotify track id, so every track has its own and keeps it.
-
-| | | fps |
-|---|---|---|
-| spiral | phyllotaxis shoved off its curves by turbulence | 90 |
-| vortex | a drain whose inflow noise breaks up every revolution | 86 |
-| starfield | perspective stars drifting off-axis, each its own hue | 102 |
-| tunnel | a corridor whose rings buckle instead of staying circular | 97 |
-| rain | columns swaying on a noise field, hue shifting down their length | 110 |
-| **turbulence** | pure fractal noise, no geometry at all | 75 |
-| ripple | interference from sources wandering on noise paths | 93 |
-| helix | two strands frayed by noise rather than drawn as a diagram | 102 |
-| swarm | particles advected by a fractal flow field | 75 |
-| bloom | ragged shockwaves from wandering centres | 97 |
-
-### Why the earlier set looked repetitive
-
-Everything was a closed-form sum of sines and circles. Those are *periodic* --
-they repeat by definition, and no amount of parameter tuning fixes it. Two
-things change that:
-
-**Value noise with fbm.** Every field is now displaced by two octaves of noise,
-so arms wander, rings buckle and columns sway instead of tracing exact curves.
-
-**Chaotic attractors.** Clifford and De Jong are genuinely chaotic maps, not
-merely irregular ones. Their parameters drift with time, so the structure keeps
-folding into shapes it has not held before rather than cycling.
-
-### Colour
-
-Full spectrum, and most of the range comes from **additive RGB accumulation**:
-particles are splatted with per-particle hue and the channels sum and saturate,
-so overlaps mix into new colours by themselves. Assigning each particle a fixed
-colour gives far less variety than letting them blend.
-
-Hue is driven from radius, depth, noise value and time depending on the field,
-so the palette drifts continuously rather than sitting still.
-
-### fire and boids
-
-Fire simulates a heat buffer at 64x64 and interpolates it up to the panel:
-softer and more liquid than simulating at full resolution, and a quarter of the
-cost. Squaring the noise at the base digs cool gaps between hot columns --
-a uniform base rises as a flat sheet, and the gaps are what make flames read as
-tongues rather than a wash.
-
-Boids run the usual separation / alignment / cohesion over a slow noise field
-so the flock keeps wandering. Two things learned tuning it: hue has to come
-from the **bird**, not its heading, because a flock aligns and heading-hue
-collapses the whole flock to one colour; and the birds are drawn as sub-pixel
-splats, not anti-aliased capsules. A capsule costs ~160 pixel ops with a sqrt
-each, and at five pixels a bird that detail is invisible -- swapping them took
-this field from 55-70 fps to 94-105.
-
-### matrix
-
-Green katakana rain on a 16x16 cell grid. Columns fall at independent speeds
-with their own trail lengths, the leading cell washed toward white for the
-glow, the tail fading to dark green. Glyphs re-roll as they fall on a per-cell
-clock, so a column flickers rather than flipping all at once -- that flicker is
-what makes it read as characters instead of texture.
-
-**The katakana are drawn, not typed.** TFT_eSPI's built-in fonts and every GFX
-free font are ASCII only (0x20..0x7E), so U+FF66..U+FF9D are simply not in
-them. They are 8x8 bitmaps here, which also gives an exact 8px cell and is what
-makes the grid line up.
-
-### They do not react to the audio
-
-There is no audio signal on this device. Spotify deprecated `/audio-features`
-and `/audio-analysis` in November 2024; this app returns **403** from both,
-verified with an on-device probe against the live API. The board has no
-microphone. Motion comes from playback position and the per-track seed -- real,
-but not audio. The seek bar, by contrast, is genuinely accurate.
-
-Real reactivity needs an I2S microphone (an INMP441, a few dollars) on the
-breakout pads feeding an FFT. No API will provide it.
-
-## Scenes
-
-The scene is picked deterministically from the line index, so it holds for that
-line and changes on the next. Scenes that cannot fit the text fall back rather
-than clip.
-
-| scene | what it does |
+| style | what it does |
 |---|---|
 | hero | the longest word set enormous, rest of the line small beneath |
 | stack | words stacked and left-aligned, each sliding in after the last |
@@ -158,10 +127,6 @@ than clip.
 | rowfade | rows arrive one at a time from alternating sides |
 | stamp | lands oversized for a beat, then settles onto the fitted size |
 
-Type is TFT_eSPI's built-in font 1 — a 6x8 cell — scaled by integer multiples.
-That keeps it crisp at any size, which is what makes large blocky type look
-deliberate rather than stretched.
-
 **Long lines split into phrases rather than shrinking.** A line that will not
 fit at a large face is broken at word boundaries into the fewest phrases that
 each fit in at most 3 rows, shown in sequence across the line's own duration.
@@ -170,45 +135,85 @@ enough, because at a small face five rows still fit and the line never splits.
 Capping rows per phrase is what actually forces big type.
 
 Each phrase gets time in proportion to its length, which tracks the singing
-better than dividing evenly. LRC carries per-line timestamps only -- there is
-no word-level timing in what LRCLIB serves -- so within a line this is an
+better than dividing evenly. LRC carries per-line timestamps only — there is no
+word-level timing in what LRCLIB serves — so within a line this is an
 approximation however it is done.
 
-**Nothing is ever clipped.** `layoutFit()` steps the size down until the whole
-line fits its box, and `wrapText()` reports overflow rather than silently
-dropping rows. The floor is size 1: 21 columns by 16 rows, ~330 characters,
-comfortably longer than any lyric line. Scenes declare a preferred maximum size
-and get a smaller one automatically — on real lyrics, a 6-character line takes
-size 3 while a 61-character line drops to size 1 across 4 rows.
+**Nothing is ever clipped.** `layoutFit()` steps down the ladder until the whole
+line fits, and `wrapText()` reports overflow rather than silently dropping rows.
+The floor is the 6x8 cell at size 1: 21 columns by 16 rows, ~330 characters,
+comfortably longer than any lyric line.
 
-## Lyrics
+Between lines, a short gap holds the last line — which reads as the singer
+pausing. Only a prolonged one (over `NOTES_AFTER_MS`, 4s) gives up and floats
+music notes with the track and artist beneath, which is also what a track with
+no synced lyrics gets.
 
-Two sources, because Spotify has no lyrics API — their in-app lyrics are
+## Visuals mode
+
+Thirteen colour fields. Which one a song gets comes from an FNV-1a hash of its
+Spotify track id, so every track has its own and keeps it. Track, artist and a
+seek bar sit along the bottom.
+
+| field | | fps |
+|---|---|---|
+| spiral | phyllotaxis shoved off its curves by turbulence | 88 |
+| vortex | a drain whose inflow noise breaks up every revolution | 86 |
+| starfield | perspective stars drifting off-axis, each its own hue | 102 |
+| tunnel | a corridor whose rings buckle instead of staying circular | 100 |
+| rain | columns swaying on a noise field, hue shifting down their length | 107 |
+| turbulence | pure fractal noise, no geometry at all | 76 |
+| ripple | interference from sources wandering on noise paths | 95 |
+| helix | two strands frayed by noise rather than drawn as a diagram | 102 |
+| swarm | particles advected by a fractal flow field | 75 |
+| bloom | ragged shockwaves from wandering centres | 100 |
+| matrix | green katakana rain, columns at independent speeds | 124 |
+| fire | a heat buffer simulated at half res and interpolated up | 78 |
+| boids | flocking chevrons — separation, alignment, cohesion | 94 |
+
+Colour comes mostly from **additive RGB accumulation**: particles are splatted
+with per-particle hue and the channels sum and saturate, so overlaps mix into
+new colours by themselves. Giving each particle one fixed colour yields far
+less range than letting them blend.
+
+Motion is **value noise with two octaves of fbm**, not sums of sines. Sine
+fields are periodic — they repeat by definition, and no amount of tuning fixes
+that. Noise does not.
+
+### They do not react to the audio
+
+There is no audio signal on this device, and it does not pretend otherwise.
+Spotify deprecated `/audio-features` and `/audio-analysis` in November 2024;
+this app returns **403** from both, verified with an on-device probe against
+the live API. The board has no microphone.
+
+Motion comes from playback position and the per-track seed — real, but not
+audio. The seek bar, by contrast, is genuinely accurate.
+
+Real reactivity would need an I2S microphone (an INMP441, a few dollars) on the
+breakout pads feeding an FFT. No API will provide it.
+
+## Where the lyrics come from
+
+Two sources, because **Spotify has no lyrics API** — their in-app lyrics are
 licensed from Musixmatch and are not exposed:
 
 - **Spotify Web API** (`/v1/me/player/currently-playing`) for track, artist,
-  album and playback position. Polled every 5s; position is interpolated
+  album and playback position. Polled every 5s, with position interpolated
   locally in between so timing stays tight without hammering the API.
 - **[LRCLIB](https://lrclib.net)** for synced LRC lyrics. Free, no API key, no
   account. Fetched once per track change.
 
 Unofficial endpoints that scrape Spotify's internal lyrics service with a
-session cookie are deliberately not used: they break their terms, and they break.
+session cookie are deliberately not used: they break their terms, and they
+break.
+
+Coverage is not universal. LRCLIB is community-contributed, so obscure and very
+new releases sometimes have nothing, and you get a track card instead.
 
 TLS validates against the Arduino core's root CA bundle
 (`setCACertBundle(rootca_crt_bundle_start)`), not `setInsecure()` — a refresh
 token crosses that connection.
-
-**Auth uses PKCE, so there is no client secret in this firmware.** A device
-that only reads playback state has no business carrying a secret that could be
-pulled out of its flash by anyone holding the board. The trade is that Spotify
-rotates the refresh token on every refresh, so the firmware persists each new
-one to NVS; the value in `secrets.h` is only a first-boot seed and going stale
-is expected. If a stored token is ever rejected (HTTP 400) it is dropped and
-the seed is retried, so the device recovers on its own.
-
-Without `src/secrets.h` the firmware still builds and runs, showing a demo
-sequence so every scene is visible.
 
 ## Hardware
 
@@ -221,98 +226,63 @@ sequence so every scene is visible.
 | Buttons | GPIO 0 (left), GPIO 47 (right) — active low, internal pullup |
 | Battery sense | GPIO 4 |
 
-## Three traps worth knowing
+### Panel revisions
 
-**LRCLIB replies chunked, so you cannot parse from the stream.** Its responses
-carry `Transfer-Encoding: chunked` with no `Content-Length`, and
-`HTTPClient::getStream()` hands back the raw socket with the chunk-size markers
-still embedded — so a JSON parser reading that stream is fed hex chunk headers
-and quietly produces nothing. `getString()` de-chunks; every LRCLIB request
-here reads the body first and parses from that. Spotify sends `Content-Length`,
-which is why only the lyrics half broke, and why it looked like a lookup
-problem rather than a transport one.
+These boards ship with two panels needing different init sequences. The
+vendored TFT_eSPI is set up for the **new** panel, confirmed on this unit with a
+flat-fill test. For an older board:
 
-Lookups also widen in stages, because the album string is the fragile part:
-Spotify reports things like `The Slow Rush (CD)` where the lyrics were filed
-under the plain album name. So it tries album+duration, then drops the album,
-then drops the duration. Each response is a few KB — `/api/search` returns
-~150KB and will not fit in RAM.
+```
+cp panels/GC9A01_Init.old_panel.h     lib/TFT_eSPI/TFT_Drivers/GC9A01_Init.h
+cp panels/GC9A01_Rotation.old_panel.h lib/TFT_eSPI/TFT_Drivers/GC9A01_Rotation.h
+```
 
-**Sprites must be forced into internal SRAM.** This SDK sets
-`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`, so a 32KB sprite goes to PSRAM by
-default and costs real time every frame. TFT_eSPI's
-`setAttribute(PSRAM_ENABLE, false)` does *not* fix it — it only chooses between
-`ps_calloc` and `calloc`, and plain `calloc` lands externally too. The fix is
-`heap_caps_malloc_extmem_enable()` around `createSprite()`, restored afterwards
-so the TLS stack can still use PSRAM.
+## Engineering notes
+
+Things that cost real time to find, kept here so they cost someone else less.
 
 **Do not use TFT_eSPI's DMA path on the S3.** `initDMA()` calls
 `spi_bus_initialize()`, handing SPI3 to the ESP-IDF driver while TFT_eSPI keeps
 writing that same peripheral's registers directly. The first frame lands and
-nothing after it does — and because the peripheral stays poisoned, a blocking
+nothing after it does — and because the peripheral stays poisoned, a *blocking*
 fallback fails too while `initDMA()` is in effect, which makes it look like a
-rendering bug. Each frame gets its own `startWrite`/`endWrite` instead.
+rendering bug rather than a bus-ownership one. Each frame gets its own
+`startWrite`/`endWrite` instead.
 
-## Build
+**Sprites must be forced into internal SRAM.** This SDK sets
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`, so a 32 KB sprite goes to PSRAM by
+default and costs real time every frame. TFT_eSPI's
+`setAttribute(PSRAM_ENABLE, false)` does *not* fix it — that only chooses
+between `ps_calloc` and `calloc`, and plain `calloc` lands externally too. Use
+`heap_caps_malloc_extmem_enable()` around `createSprite()` and restore it after,
+so the TLS stack can still use PSRAM.
 
-    python -m platformio run -t upload
-    python -m platformio device monitor
+**LRCLIB replies chunked, so you cannot parse from the stream.** Its responses
+carry `Transfer-Encoding: chunked` with no `Content-Length`, and
+`HTTPClient::getStream()` hands back the raw socket with chunk-size markers
+still embedded — so a JSON parser reading that stream is fed hex chunk headers
+and quietly produces nothing. `getString()` de-chunks. Spotify sends
+`Content-Length`, which is why only the lyrics half broke, and why it presented
+as a lookup problem rather than a transport one.
 
-## Connecting Spotify
+Lyric lookups also widen in stages, because the album string is the fragile
+part: Spotify reports things like `The Slow Rush (CD)` where the lyrics were
+filed under the plain album name. So it tries album+duration, then drops the
+album, then the duration. Each response is a few KB; `/api/search` returns
+~150 KB and will not fit in RAM.
 
-1. Create an app at https://developer.spotify.com/dashboard and add
-   `http://127.0.0.1:8888/callback` as a Redirect URI. Enable **Web API**.
-   Copy the Client ID — the client secret is not needed and is not used.
-2. `python tools/spotify_auth.py` — authorises in your browser and prints the
-   two values to keep. Runs entirely on your machine; nothing is sent anywhere
-   but Spotify, and nothing is written to disk.
-3. `cp src/secrets.h.example src/secrets.h`, fill in WiFi plus the two Spotify
-   values, reflash.
+**The GFX free fonts arrive with TFT_eSPI already.** `Fonts/GFXFF/gfxfont.h` is
+an aggregator that includes the whole set, and those headers carry no include
+guards — `#include`ing an individual font on top of it is a redefinition error.
 
-`src/secrets.h` is gitignored. Scopes requested are read-only
-(`user-read-currently-playing`, `user-read-playback-state`), and with PKCE
-there is no long-lived secret on the device at all.
+**Non-ASCII glyphs have to be drawn.** Every built-in and GFX font here is ASCII
+only (0x20–0x7E), so the katakana (U+FF66–U+FF9D) and the music symbols
+(U+2669–U+266F) are simply not in them and would render as garbage. Both are
+hand-drawn bitmaps, which also gives exact cell sizes.
 
-## Controls
-
-| input | action |
-|---|---|
-| GPIO 0 button | re-roll the current line's style (lyrics) / cycle visualiser (visuals) |
-| GPIO 47 button | switch visuals <-> lyrics |
-
-Lyrics mode shows lyrics and nothing else -- no visualiser underneath. A short
-gap holds the last line, which reads as the singer pausing. Only a prolonged
-one (over `NOTES_AFTER_MS`, 4s) gives up and floats music notes with the track
-and artist beneath, which is also what a track with no synced lyrics gets.
-
-**The note glyphs are drawn, not typed.** TFT_eSPI's built-in fonts and every
-GFX free font are ASCII only, so U+2669..U+266F -- the music symbols -- are
-simply not in them and would render as garbage. Drawing them from primitives
-also means they scale and animate freely.
-In lyrics mode the left button re-rolls the look of the line on screen right
-now: it shifts the seed, which changes scene and typeface together, so every
-press is a visible change. Measured: 8 presses gave 8 distinct scene/face
-pairings.
-| serial `m` | switch visuals <-> lyrics |
-| serial `n` | next visualiser (visuals) / re-roll style (lyrics) |
-| serial `V` / `L` | set visuals / lyrics mode absolutely |
-| serial `F` | dump the last frame as hex, to inspect off-device |
-| serial `A` | back to the per-track visualiser |
-| serial `s` | toggle status |
-| serial `o` | cycle panel rotation (prints the value for `SCREEN_ROTATION`) |
-
-The panel mounts upside down relative to TFT_eSPI's rotation 0, so
-`SCREEN_ROTATION` in `src/main.cpp` defaults to **2**. If yours differs, press
-`o` until it looks right and put that number in the define.
-
-## Panel revisions
-
-These boards ship with two panels needing different init sequences. The
-vendored TFT_eSPI is set up for the **new** panel, confirmed correct on this
-unit by a flat-fill test. For an older board:
-
-    cp panels/GC9A01_Init.old_panel.h     lib/TFT_eSPI/TFT_Drivers/GC9A01_Init.h
-    cp panels/GC9A01_Rotation.old_panel.h lib/TFT_eSPI/TFT_Drivers/GC9A01_Rotation.h
+**Build with `-ffast-math`.** Without it `sqrtf` compiles to a libm call with
+errno handling rather than the FPU instruction, and the noise-heavy fields pay
+badly for it — one dropped from 1.77 ms to 0.16 ms on that flag alone.
 
 ## Credits
 
