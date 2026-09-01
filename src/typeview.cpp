@@ -905,23 +905,83 @@ void typeDrawNotes(TFT_eSprite& s, const char* track, const char* artist,
 }
 
 // ---------------------------------------------------------------- raster
+// Measures the real extent of what was drawn, which is the only trustworthy
+// guide here.
+static void inkBounds(TFT_eSprite& m, int& x0, int& y0, int& x1, int& y1, int& lit) {
+  const uint8_t* p = (const uint8_t*)m.getPointer();
+  x0 = SCR_W; y0 = SCR_H; x1 = -1; y1 = -1; lit = 0;
+  for (int y = 0; y < SCR_H; y++) {
+    const uint8_t* row = p + y * SCR_W;
+    for (int x = 0; x < SCR_W; x++) {
+      if (!row[x]) continue;
+      lit++;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+  }
+}
+
+// Renders `text` into the 8bpp mask as large as it will go WITHOUT clipping.
+//
+// GFX font metrics are not a reliable guide: fontHeight() reports the line
+// advance, which for several of these faces is smaller than the actual ink
+// once descenders are involved. A word can therefore "fit" by the numbers and
+// still lose its lower half -- which is exactly what was happening. So render,
+// measure the ink that actually landed, recentre on it, and step down a size
+// only if it genuinely does not fit.
 int typeRasterise(TFT_eSprite& mask, const char* text) {
   mask.fillSprite(0);
   if (!text || !*text) return 0;
 
-  // Same fitting rules as the scenes, so the formed text reads the same way.
-  Layout L;
-  layoutFit(mask, text, FACE_SANS, SCR_W - 8, SCR_H - 12, L);
-  applyRung(mask, L.rung);
-  mask.setTextDatum(MC_DATUM);
-  mask.setTextColor(TFT_WHITE);
+  const Face& face = FACE_SANS;
+  Layout probe;
+  layoutFit(mask, text, face, SCR_W - 8, SCR_H - 16, probe);
+  int rung0 = rungIndexOf(face, probe.rung);
 
-  int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
-  for (int i = 0; i < L.nRows; i++)
-    mask.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
+  char rows[ROW_MAX][ROW_CHARS];
+  int  bestLit = 0;
 
-  const uint8_t* p = (const uint8_t*)mask.getPointer();
-  int lit = 0;
-  for (int k = 0; k < SCR_W * SCR_H; k++) if (p[k]) lit++;
-  return lit;
+  for (int attempt = 0; attempt < 5; attempt++) {
+    int use = rung0 + attempt;
+    if (use > face.n - 1) use = face.n - 1;
+
+    applyRung(mask, face.rungs[use]);
+    mask.setTextDatum(MC_DATUM);
+    mask.setTextColor(TFT_WHITE);
+
+    int lineH = mask.fontHeight() + 1;
+    bool ovf = false;
+    int n = wrapText(mask, text, rows, ROW_MAX, SCR_W - 8, &ovf);
+    if (n < 1) return 0;
+    int y0 = SCR_H / 2 - (n - 1) * lineH / 2;
+
+    mask.fillSprite(0);
+    for (int i = 0; i < n; i++)
+      mask.drawString(rows[i], SCR_W / 2, y0 + i * lineH);
+
+    int ix0, iy0, ix1, iy1, lit;
+    inkBounds(mask, ix0, iy0, ix1, iy1, lit);
+    if (lit == 0) continue;
+    bestLit = lit;
+
+    int inkW = ix1 - ix0 + 1, inkH = iy1 - iy0 + 1;
+    if (inkW <= SCR_W - 4 && inkH <= SCR_H - 4) {
+      // Redraw shifted so the measured ink is centred, not the nominal box.
+      int dx = (SCR_W / 2) - ((ix0 + ix1) / 2);
+      int dy = (SCR_H / 2) - ((iy0 + iy1) / 2);
+      mask.fillSprite(0);
+      for (int i = 0; i < n; i++)
+        mask.drawString(rows[i], SCR_W / 2 + dx, y0 + i * lineH + dy);
+      inkBounds(mask, ix0, iy0, ix1, iy1, lit);
+      Serial.printf("[raster] rung %d  ink %d,%d..%d,%d  %d lit%s\n",
+                    use, ix0, iy0, ix1, iy1, lit,
+                    (ix0 < 1 || iy0 < 1 || ix1 > SCR_W - 2 || iy1 > SCR_H - 2)
+                      ? "  CLIPPED" : "");
+      return lit;
+    }
+    if (use == face.n - 1) break;      // nothing smaller to fall back to
+  }
+  return bestLit;
 }

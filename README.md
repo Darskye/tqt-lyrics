@@ -78,25 +78,38 @@ so the palette drifts continuously rather than sitting still.
 
 ### lyricform
 
-Particles drift on a noise flow field and assemble into **one word at a time**,
-scattering and re-forming for each. Words share the line's time in proportion
-to their length.
+One turbulent field of particles that continuously reassembles itself into the
+current word. Not two populations -- there is no "text" set and no "background"
+set. Every particle carries the letterform at some moments and churns loose at
+others.
 
-One word rather than the whole line, because a full line has to shrink to fit
-128px and ends up clipped -- a single word can be set large and stay legible.
+**Each particle breathes on its own clock**, at its own rate and phase. A
+single global morph value made the whole field explode and implode in unison,
+which reads as one repeating pattern no matter how noisy the underlying motion
+is. With independent clocks, at any instant some particles are arriving, some
+holding, some tearing away, and the shape is being rebuilt continuously rather
+than snapped to.
 
-The word is rasterised offscreen into an 8bpp mask and its lit pixels become
-particle targets, sampled evenly down to the particle count. Taking the first N
-instead would fill only the top rows and leave the rest of the word unformed.
+Each particle also draws a **fresh target every breath**, so it does not
+retrace the same dot, and turbulence stays on at full pull, so the word is made
+of churning pixels rather than settling into a clean bitmap.
 
-**A quarter of the field never settles.** Without strays the whole screen
-freezes the instant a word forms, which kills any sense of a living particle
-system. Converged particles also keep a small wander, so the word breathes
-rather than turning into a frozen bitmap.
+There is deliberately no ramp between words: fading out and back in for every
+word is itself a global beat. A word change washes through the field as each
+particle picks it up on its next breath. The only global ramp left is at the
+edges of a line, so the sea disperses between lines.
 
-Colour while scattered, white once assembled: chaos gets to be colourful, but
-text has to be legible. Rasterising happens on word change only, never per
-frame.
+Colour throughout, with **brightness** rather than hue lifting the letterform
+out of the sea -- whitening only the settled particles would reintroduce the
+separation this is built to avoid.
+
+**Font metrics cannot be trusted for the mask.** `fontHeight()` reports the
+line advance, which for several of these faces is smaller than the real ink
+once descenders are involved, so a word that fits by the numbers still loses
+its lower half. The rasteriser draws, measures the ink that actually landed,
+recentres on that, and only steps down a size if it genuinely does not fit.
+Verified on hardware: ink bounds land inside 0..127 every render, with no
+clipping reported.
 
 ### They do not react to the audio
 

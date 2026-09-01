@@ -148,12 +148,12 @@ static int wordSlotAt(const char* line, uint32_t age, uint32_t span,
       int n = (len < outSize - 1) ? len : outSize - 1;
       memcpy(out, w, n);
       out[n] = 0;
-      float local = (float)(age - acc) / (float)slot;
-      if (local < 0.0f) local = 0.0f;
-      if (local > 1.0f) local = 1.0f;
-      float rise = local / 0.30f;          if (rise > 1.0f) rise = 1.0f;
-      float fall = (1.0f - local) / 0.25f; if (fall > 1.0f) fall = 1.0f;
-      morph = rise < fall ? rise : fall;
+      // Deliberately no per-word ramp. Fading the whole field out and back in
+      // between words is a global explode/implode beat -- exactly the "one
+      // constant pattern" this is meant to avoid. Particles pick up the new
+      // word on their own next breath instead, so the change washes through
+      // the field rather than resetting it.
+      morph = 1.0f;
       return i;
     }
     acc += slot;
@@ -414,6 +414,13 @@ void loop() {
 
       char word[40];
       int wi = wordSlotAt(lyrics.text(idx), age, span, word, sizeof(word), m);
+
+      // The only global ramp left is at the edges of the line itself, so the
+      // sea disperses between lines and gathers again for the next one.
+      uint32_t lft = nx > posMs ? nx - posMs : 0;
+      float rise = age / 500.0f; if (rise > 1.0f) rise = 1.0f;
+      float fall = lft / 500.0f; if (fall > 1.0f) fall = 1.0f;
+      m *= (rise < fall ? rise : fall);
       if (wi >= 0 && (idx != morphLine || wi != morphWord)) {
         // One word at a time: a whole line has to shrink to fit and ends up
         // clipped, whereas a single word can be set large.

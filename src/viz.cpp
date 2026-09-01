@@ -387,48 +387,60 @@ void vizMorphSet(TFT_eSprite& mask, const char* text) {
 
 static void fMorph(uint16_t* fb, float t, uint32_t sd) {
   const int N = MORPH_MAX;
-  // A quarter of the field never settles. Without strays the whole screen
-  // freezes the moment a word forms, which kills the sense that this is a
-  // living particle system that happens to be holding a shape.
-  const int CONVERGE = (N * 74) / 100;
-  float m = g_morph;
-  // Ease the assembly so particles arrive rather than snapping into place.
-  float e = m * m * (3.0f - 2.0f * m);
+  float m = g_morph;              // is a word being shown at all
 
   for (int i = 0; i < N; i++) {
     uint32_t h = mix(sd ^ (uint32_t)i, 77);
-    float bx = (float)(h & 127), by = (float)((h >> 7) & 127);
 
-    // Chaotic home: a noise flow field, same family as the swarm.
-    float n1 = fbm(bx * 0.020f + t * 0.13f, by * 0.020f, sd);
-    float n2 = fbm(bx * 0.020f, by * 0.020f - t * 0.11f, sd ^ 0x77u);
-    float cx = bx + (n1 - 0.5f) * 54.0f;
-    float cy = by + (n2 - 0.5f) * 54.0f;
+    // Every particle is always in the turbulent flow. There is no separate
+    // "background" set: the same particles that carry the letterform are the
+    // ones churning around it, a moment earlier or later.
+    float bx = (float)(h & 127), by = (float)((h >> 7) & 127);
+    float n1 = fbm(bx * 0.019f + t * 0.17f, by * 0.019f, sd);
+    float n2 = fbm(bx * 0.019f, by * 0.019f - t * 0.15f, sd ^ 0x77u);
+    float cx = bx + (n1 - 0.5f) * 84.0f;
+    float cy = by + (n2 - 0.5f) * 84.0f;
+
+    // Each particle breathes in and out on its own clock, at its own rate and
+    // phase. A single global morph made the whole field explode and implode in
+    // lockstep -- one constant pattern. Independent clocks mean that at any
+    // instant some are arriving, some holding, some tearing away, and the
+    // shape is continuously being rebuilt rather than snapped to.
+    float ph   = (float)((h >> 14) & 1023) * (TAU / 1024.0f);
+    float rate = 0.30f + (float)((h >> 24) & 15) * 0.05f;
+    float cyc  = t * rate + ph;
+
+    // Skewed so a particle spends most of its cycle near the text and a
+    // shorter stretch loose: enough of the field is home at any moment for the
+    // word to read, while nothing ever stops moving.
+    float pull = (fsin(cyc) + 0.50f) * 1.7f;
+    if (pull < 0.0f) pull = 0.0f;
+    if (pull > 1.0f) pull = 1.0f;
+    pull *= m;
 
     float px = cx, py = cy;
-    float settled = 0.0f;
-    if (i < CONVERGE && g_mn > 0 && e > 0.001f) {
-      int ti = i % g_mn;
-      // Keep a small wander even once landed, so the word breathes instead of
-      // turning into a frozen bitmap.
-      float jx = (vnoise((float)i * 0.61f, t * 1.7f, sd) - 0.5f) * 2.4f;
-      float jy = (vnoise(t * 1.6f, (float)i * 0.61f, sd) - 0.5f) * 2.4f;
-      px = cx + ((float)g_mtx[ti] + jx - cx) * e;
-      py = cy + ((float)g_mty[ti] + jy - cy) * e;
-      settled = e;
+    if (g_mn > 0 && pull > 0.002f) {
+      // A fresh target each breath, drawn independently per particle, so a
+      // particle does not retrace the same dot every cycle and the letterform
+      // is constantly re-formed out of different pixels.
+      uint32_t cycN = (uint32_t)(cyc * (1.0f / TAU));
+      int ti = (int)(mix(h, cycN) % (uint32_t)g_mn);
+
+      // Turbulence stays on at full pull, so the word is made of churning
+      // pixels rather than settling into a clean bitmap.
+      float jx = (vnoise(cx * 0.10f, cy * 0.10f + t * 2.3f, sd) - 0.5f) * 6.5f;
+      float jy = (vnoise(cy * 0.10f, cx * 0.10f - t * 2.0f, sd) - 0.5f) * 6.5f;
+
+      px = cx + ((float)g_mtx[ti] + jx - cx) * pull;
+      py = cy + ((float)g_mty[ti] + jy - cy) * pull;
     }
 
-    // Colour while scattered, white once formed: chaos gets to be colourful,
-    // but text has to be legible.
-    int amp = 9 + (int)(settled * 20.0f);
-    int r, g, b;
-    hue2rgb((int)(n1 * 190.0f + t * 20.0f), amp, r, g, b);
-    g <<= 1;
-    int w2 = (int)(settled * 32.0f);
-    r += ((amp - r) * w2) >> 5;
-    g += (((amp << 1) - g) * w2) >> 5;
-    b += ((amp - b) * w2) >> 5;
-    splatRGB(fb, px, py, r, g, b);
+    // Colour throughout -- brightness, not hue, is what lifts the letterform
+    // out of the sea. Whitening only the settled ones would reintroduce the
+    // very separation this is meant to remove.
+    int amp = 7 + (int)(pull * 22.0f);
+    int hue = (int)(n1 * 190.0f + t * 24.0f) + (int)(pull * 34.0f);
+    splat(fb, px, py, hue, amp);
   }
 }
 
