@@ -365,5 +365,6 @@ bool  netConnected()  { return false; }
 const char* netStatus() { return "demo mode"; }
 bool  netPollSpotify(NowPlaying& out) { (void)out; return false; }
 bool  netFetchLyrics(const NowPlaying& np, String& body) { (void)np; (void)body; return false; }
+int   netProbeAudioFeatures(const char* trackId) { (void)trackId; return -1; }
 
 #endif

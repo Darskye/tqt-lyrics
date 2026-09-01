@@ -6,6 +6,23 @@ colour. Every scene owns the entire frame.
 
 Measured on hardware: **114–129 fps**, 0.27–1.31 ms of drawing per frame.
 
+
+## What it looks like
+
+Captured off the device itself over serial, not mocked up.
+
+| | | |
+|---|---|---|
+| ![matrix](docs/matrix.png) | ![fire](docs/fire.png) | ![boids](docs/boids.png) |
+| `matrix` | `fire` | `boids` |
+| ![turbulence](docs/turbulence.png) | ![stack](docs/lyric-stack.png) | ![invert](docs/lyric-invert.png) |
+| `turbulence` | lyrics: `stack` | lyrics: `invert` |
+| ![zoom](docs/lyric-zoom.png) | ![rowfade](docs/lyric-rowfade.png) | ![flash](docs/lyric-flash.png) |
+| lyrics: `zoom` | lyrics: `rowfade` | lyrics: `flash` |
+
+The lyric shots use the built-in demo text rather than a real song, so the
+images do not reproduce anyone's lyrics.
+
 ## The idea
 
 At roughly 16 characters per row there is no room for a lyric sheet, so this
