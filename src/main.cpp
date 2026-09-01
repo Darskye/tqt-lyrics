@@ -21,7 +21,7 @@
 #include "net.h"
 #include "viz.h"
 
-#define PIN_BTN_L  0    // cycle visualiser
+#define PIN_BTN_L  0    // cycle style (lyrics) or visualiser (visuals)
 #define PIN_BTN_R  47   // toggle visuals <-> lyrics
 #define PIN_LCD_BL 10   // active low
 
@@ -43,12 +43,13 @@ static int      fps = 0;
 // Derived from the Spotify track id so a given song always looks the same.
 static volatile uint32_t gTrackSeed = 0;
 
-// Right button toggles between the two; left button cycles visualiser.
-// MODE_LYRICS still falls back to the visualiser during gaps between lines,
-// so the panel is never empty.
+// Right button toggles between the two. Left button cycles whatever the
+// current mode has to cycle: lyric styles in MODE_LYRICS, visualisers in
+// MODE_VIZ. MODE_LYRICS shows lyrics and nothing else -- gaps are black.
 enum { MODE_LYRICS = 0, MODE_VIZ = 1 };
 static int gMode = MODE_LYRICS;
-static int gVizOverride = -1;        // -1 = whichever the track hashes to
+static int gVizOverride   = -1;      // -1 = whichever the track hashes to
+static int gStyleOverride = -1;      // -1 = a different look every line
 static uint8_t  rotation = SCREEN_ROTATION;
 
 // ------------------------------------------------------------------ playback
@@ -243,7 +244,7 @@ void setup() {
   lyrics.parse(kDemoLrc);
   haveLyrics = true;
 
-  Serial.println("BTN_L (GPIO0) cycle visualiser   BTN_R (GPIO47) visuals <-> lyrics");
+  Serial.println("BTN_L (GPIO0) cycle style/visualiser   BTN_R (GPIO47) visuals <-> lyrics");
   Serial.println("serial: m mode, n next viz, A auto viz, s status, o rotate");
 }
 
@@ -268,8 +269,11 @@ void loop() {
     if      (c == 'r') { sceneSalt += 7; lastLineIdx = -2; }
     else if (c == 's') showStatus = !showStatus;
     else if (c == 'm') { gMode = (gMode == MODE_LYRICS) ? MODE_VIZ : MODE_LYRICS; }
-    else if (c == 'n') { gVizOverride = (gVizOverride + 1) % VIZ_COUNT; }
-    else if (c == 'A') { gVizOverride = -1; }
+    else if (c == 'n') {
+      if (gMode == MODE_VIZ) gVizOverride = (gVizOverride + 1) % VIZ_COUNT;
+      else gStyleOverride = (gStyleOverride + 1) % TYPE_STYLE_COUNT;
+    }
+    else if (c == 'A') { gVizOverride = -1; gStyleOverride = -1; }
     else if (c == 'l') {
       // Force a lyrics re-fetch on the next poll by forgetting which track is
       // loaded. Makes the LRCLIB path testable without changing songs.
@@ -301,10 +305,22 @@ void loop() {
                                                   : startMs + 4000;
     uint32_t age  = posMs > startMs ? posMs - startMs : 0;
     uint32_t hold = nextMs > startMs ? nextMs - startMs : 3000;
-    typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt);
+    typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt,
+             gStyleOverride);
+  } else if (gMode == MODE_LYRICS) {
+    // Lyrics mode shows lyrics and nothing else. Gaps between lines are
+    // deliberately black; a track with no synced lyrics at all says so rather
+    // than sitting blank as though it had crashed.
+    s.fillSprite(INK_OFF);
+    if (live && !haveLyrics) {
+      s.setTextFont(1);
+      s.setTextSize(1);
+      s.setTextDatum(MC_DATUM);
+      s.setTextColor(0x8410);
+      s.drawString("no lyrics", SCR_W / 2, SCR_H / 2);
+    }
   } else if (live) {
-    // Visuals mode, or a gap between lyric lines: run the visualiser with the
-    // seek bar and track details along the bottom.
+    // Visuals mode: the visualiser with the seek bar and track details.
     int vi = (gVizOverride >= 0) ? gVizOverride : vizIndexForSeed(gTrackSeed);
     float prog = np.durationMs ? (float)posMs / (float)np.durationMs : 0.0f;
     vizDraw(s, vi, gTrackSeed, (float)millis() * 0.001f, prog,
@@ -320,9 +336,14 @@ void loop() {
       int fr; bool clipped;
       typeLastFit(fr, clipped);
       uint32_t sd = (uint32_t)idx + sceneSalt;
-      Serial.printf("[line %d] %-8s %-8s %3d chars  %d rows%s\n",
-                    idx, typeSceneName(sd), typeFaceName(sd),
+      // Report the style actually drawn, not the one the seed would have
+      // picked -- otherwise a locked style is invisible in the log.
+      const char* styleNm = (gStyleOverride >= 0) ? typeStyleName(gStyleOverride)
+                                                  : typeSceneName(sd);
+      Serial.printf("[line %d] %-8s %-8s %3d chars  %d rows%s%s\n",
+                    idx, styleNm, typeFaceName(sd),
                     (int)strlen(lyrics.text(idx)), fr,
+                    gStyleOverride >= 0 ? "  locked" : "",
                     clipped ? "   *** CLIPPED ***" : "");
     }
     lastLineIdx = idx;

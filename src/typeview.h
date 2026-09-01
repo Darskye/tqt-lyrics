@@ -19,8 +19,15 @@
 //
 //   ageMs  -- how long this line has been showing
 //   holdMs -- how long until the next line takes over
+// styleOverride: -1 picks scene and typeface from the seed, so each line
+// differs. 0..TYPE_STYLE_COUNT-1 locks a specific pairing, which is what the
+// left button steps through.
 void typeDraw(TFT_eSprite& s, const char* text,
-              uint32_t ageMs, uint32_t holdMs, uint32_t seed);
+              uint32_t ageMs, uint32_t holdMs, uint32_t seed,
+              int styleOverride = -1);
+
+#define TYPE_STYLE_COUNT 18
+const char* typeStyleName(int styleIndex);
 
 // Shown only when nothing is playing at all -- a status line and a slow caret,
 // so the panel never looks dead. Anything with a track behind it goes to the

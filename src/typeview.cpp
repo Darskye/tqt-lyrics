@@ -66,12 +66,16 @@ static const int kInkCount = sizeof(kInks) / sizeof(kInks[0]);
 // ---------------------------------------------------------------- scenes
 enum Scene {
   SC_HERO, SC_STACK, SC_INVERT, SC_WIPE, SC_SCROLL,
-  SC_TYPE, SC_FLASH, SC_RULE, SC_BOX, SC_SPLIT, SC_COUNT
+  SC_TYPE, SC_FLASH, SC_RULE, SC_BOX, SC_SPLIT,
+  SC_ZOOM, SC_WIPEUP, SC_GLITCH, SC_SHADOW, SC_MIRROR,
+  SC_DECODE, SC_ROWFADE, SC_STAMP, SC_COUNT
 };
 
 static const char* kSceneNames[SC_COUNT] = {
   "hero", "stack", "invert", "wipe", "scroll",
-  "type", "flash", "rule", "box", "split"
+  "type", "flash", "rule", "box", "split",
+  "zoom", "wipeup", "glitch", "shadow", "mirror",
+  "decode", "rowfade", "stamp"
 };
 
 struct Layout {
@@ -150,6 +154,31 @@ static void applyRung(TFT_eSprite& s, const Rung& r) {
   s.setTextSize(r.size);
 }
 
+
+// Draws a row character by character. TFT_eSPI has no per-glyph hook, so each
+// character is its own drawString and the pen advances by that glyph's own
+// measured width -- which keeps proportional faces spaced correctly.
+static void drawRowChars(TFT_eSprite& s, const char* row, int x, int y,
+                         int resolved, uint32_t seed) {
+  static const char pool[] = "#%&$@*+=?/|<>~^";
+  char ch[2] = {0, 0};
+  int pen = x;
+  uint32_t frame = (uint32_t)(millis() / 45);
+  for (int i = 0; row[i]; i++) {
+    ch[0] = row[i];
+    if (ch[0] != ' ' && i >= resolved)
+      ch[0] = pool[mix(seed ^ (uint32_t)(i * 2654435761u), frame) % (sizeof(pool) - 1)];
+    s.drawString(ch, pen, y);
+    pen += s.textWidth(ch);
+  }
+}
+
+static int rungIndexOf(const Face& face, const Rung& r) {
+  for (uint8_t i = 0; i < face.n; i++)
+    if (face.rungs[i].gfx == r.gfx && face.rungs[i].size == r.size) return i;
+  return face.n - 1;
+}
+
 // Greedy word wrap against whatever face is currently set.
 // Sets *overflow when text remained after maxRows -- the caller must not just
 // draw what it got, because the rest would be silently lost.
@@ -224,13 +253,28 @@ static void layoutFit(TFT_eSprite& s, const char* txt, const Face& face,
 }
 
 // ---------------------------------------------------------------- draw
+const char* typeStyleName(int i) {
+  return kSceneNames[((i % SC_COUNT) + SC_COUNT) % SC_COUNT];
+}
+
 void typeDraw(TFT_eSprite& s, const char* text,
-              uint32_t ageMs, uint32_t holdMs, uint32_t seed) {
+              uint32_t ageMs, uint32_t holdMs, uint32_t seed,
+              int styleOverride) {
   s.fillSprite(INK_OFF);
   if (!text || !*text) return;
 
-  Scene sc = sceneFromSeed(seed);
-  const Face& face = faceFromSeed(seed);
+  // A locked style pairs a scene with a typeface. 18 and 5 are coprime, so
+  // stepping the index walks every scene and keeps changing the face too.
+  Scene sc;
+  const Face* fp;
+  if (styleOverride >= 0) {
+    sc = (Scene)(styleOverride % SC_COUNT);
+    fp = &kFaces[styleOverride % kFaceCount];
+  } else {
+    sc = sceneFromSeed(seed);
+    fp = &faceFromSeed(seed);
+  }
+  const Face& face = *fp;
   uint16_t ink = typeInk(seed);
 
   int wc = wordCount(text);
@@ -427,6 +471,143 @@ void typeDraw(TFT_eSprite& s, const char* text,
       int by = 92 - (B.nRows - 1) * B.lineH / 2;
       for (int i = 0; i < B.nRows; i++)
         s.drawString(B.rows[i], SCR_W / 2 + offs, by + i * B.lineH);
+      break;
+    }
+
+    // Grows into place: starts a few rungs down the ladder and steps up.
+    case SC_ZOOM: {
+      layoutFit(s, text, face, SCR_W - 12, SCR_H - 14, L);
+      int use = rungIndexOf(face, L.rung) + (int)((1.0f - in) * 3.0f);
+      if (use > face.n - 1) use = face.n - 1;
+      applyRung(s, face.rungs[use]);
+      s.setTextDatum(MC_DATUM);
+      s.setTextColor(ink, INK_OFF);
+      int lh = s.fontHeight() + 1;
+      char rows[ROW_MAX][ROW_CHARS];
+      bool ovf = false;
+      int n = wrapText(s, text, rows, ROW_MAX, SCR_W - 12, &ovf);
+      int y0 = SCR_H / 2 - (n - 1) * lh / 2;
+      for (int i = 0; i < n; i++) s.drawString(rows[i], SCR_W / 2, y0 + i * lh);
+      break;
+    }
+
+    // Shutter retreating downward instead of across.
+    case SC_WIPEUP: {
+      layoutFit(s, text, face, SCR_W - 14, SCR_H - 16, L);
+      applyRung(s, L.rung);
+      s.setTextDatum(MC_DATUM);
+      s.setTextColor(ink, INK_OFF);
+      int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
+      for (int i = 0; i < L.nRows; i++)
+        s.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
+      int cut = (int)(in * SCR_H);
+      if (cut < SCR_H) {
+        s.fillRect(0, 0, SCR_W, SCR_H - cut, INK_OFF);
+        s.fillRect(0, SCR_H - cut, SCR_W, 2, ink);
+      }
+      break;
+    }
+
+    // Rows tear sideways on a fast frame clock, with occasional bigger slips.
+    case SC_GLITCH: {
+      layoutFit(s, text, face, SCR_W - 10, SCR_H - 12, L);
+      applyRung(s, L.rung);
+      s.setTextDatum(MC_DATUM);
+      s.setTextColor(ink, INK_OFF);
+      int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
+      uint32_t frame = ageMs / 70;
+      for (int i = 0; i < L.nRows; i++) {
+        uint32_t h = mix(seed ^ (uint32_t)(i * 977u), frame);
+        int dx = (int)(h % 9) - 4;
+        if (((h >> 8) % 11) == 0) dx = (int)((h >> 12) % 27) - 13;
+        s.drawString(L.rows[i], SCR_W / 2 + dx, y0 + i * L.lineH);
+      }
+      break;
+    }
+
+    // A dim offset copy behind the type, closing in as the line lands.
+    case SC_SHADOW: {
+      layoutFit(s, text, face, SCR_W - 14, SCR_H - 16, L);
+      applyRung(s, L.rung);
+      s.setTextDatum(MC_DATUM);
+      int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
+      int off = 2 + (int)((1.0f - in) * 8.0f);
+      s.setTextColor(0x4208);
+      for (int i = 0; i < L.nRows; i++)
+        s.drawString(L.rows[i], SCR_W / 2 + off, y0 + i * L.lineH + off);
+      s.setTextColor(ink);
+      for (int i = 0; i < L.nRows; i++)
+        s.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
+      break;
+    }
+
+    // The block sits high with a dimmed echo beneath it.
+    case SC_MIRROR: {
+      layoutFit(s, text, face, SCR_W - 14, 50, L);
+      applyRung(s, L.rung);
+      s.setTextDatum(MC_DATUM);
+      int y0 = 42 - (L.nRows - 1) * L.lineH / 2;
+      s.setTextColor(ink);
+      for (int i = 0; i < L.nRows; i++)
+        s.drawString(L.rows[i], SCR_W / 2, y0 + i * L.lineH);
+      s.setTextColor(0x39E7);
+      int my = 78 + (int)((1.0f - in) * 12.0f);
+      for (int i = 0; i < L.nRows; i++)
+        s.drawString(L.rows[L.nRows - 1 - i], SCR_W / 2, my + i * L.lineH);
+      break;
+    }
+
+    // Characters settle out of noise, left to right across the whole line.
+    case SC_DECODE: {
+      layoutFit(s, text, face, SCR_W - 10, SCR_H - 12, L);
+      applyRung(s, L.rung);
+      s.setTextDatum(TL_DATUM);
+      s.setTextColor(ink, INK_OFF);
+      uint32_t span = holdMs ? (holdMs * 60 / 100) : 900;
+      if (span < 200) span = 200;
+      int total = (int)strlen(text);
+      int resolved = (int)((uint64_t)ageMs * (uint64_t)total / (uint64_t)span);
+      int y0 = (SCR_H - L.blockH) / 2;
+      int consumed = 0;
+      for (int i = 0; i < L.nRows; i++) {
+        int w = s.textWidth(L.rows[i]);
+        drawRowChars(s, L.rows[i], (SCR_W - w) / 2, y0 + i * L.lineH,
+                     resolved - consumed, seed);
+        consumed += (int)strlen(L.rows[i]) + 1;
+      }
+      break;
+    }
+
+    // Rows arrive one at a time from alternating sides.
+    case SC_ROWFADE: {
+      layoutFit(s, text, face, SCR_W - 12, SCR_H - 14, L);
+      applyRung(s, L.rung);
+      s.setTextDatum(MC_DATUM);
+      s.setTextColor(ink, INK_OFF);
+      int y0 = SCR_H / 2 - (L.nRows - 1) * L.lineH / 2;
+      for (int i = 0; i < L.nRows; i++) {
+        float li = easeOutCubic(((float)ageMs - i * 110.0f) / 340.0f);
+        if (li <= 0.0f) continue;
+        int dx = (int)((1.0f - li) * ((i & 1) ? 120.0f : -120.0f));
+        s.drawString(L.rows[i], SCR_W / 2 + dx, y0 + i * L.lineH);
+      }
+      break;
+    }
+
+    // Lands oversized for a beat, then settles onto the fitted size.
+    case SC_STAMP: {
+      layoutFit(s, text, face, SCR_W - 12, SCR_H - 14, L);
+      int fitIdx = rungIndexOf(face, L.rung);
+      int use = (ageMs < 130 && fitIdx > 0) ? fitIdx - 1 : fitIdx;
+      applyRung(s, face.rungs[use]);
+      s.setTextDatum(MC_DATUM);
+      s.setTextColor(ink, INK_OFF);
+      int lh = s.fontHeight() + 1;
+      char rows[ROW_MAX][ROW_CHARS];
+      bool ovf = false;
+      int n = wrapText(s, text, rows, ROW_MAX, SCR_W - 6, &ovf);
+      int y0 = SCR_H / 2 - (n - 1) * lh / 2;
+      for (int i = 0; i < n; i++) s.drawString(rows[i], SCR_W / 2, y0 + i * lh);
       break;
     }
 

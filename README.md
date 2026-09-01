@@ -97,14 +97,22 @@ than clip.
 |---|---|
 | hero | the longest word set enormous, rest of the line small beneath |
 | stack | words stacked and left-aligned, each sliding in after the last |
-| invert | black on white — the strongest contrast move monochrome has |
-| wipe | type is present from frame one; a black shutter retreats off it |
+| invert | knocked out of a filled field |
+| wipe | type present from frame one; a shutter retreats off it |
 | scroll | long lines travel across as one big row, between two rules |
 | type | typewriter reveal with a blinking block cursor |
-| flash | slams in inverted, then settles — reads as an accent |
-| rule | heavy bars drive in from both edges, type held between them |
-| box | a white card grows from the centre, type knocked out of it |
+| flash | slams in inverted, then settles |
+| rule | heavy bars drive in from both edges, type held between |
+| box | a card grows from the centre, type knocked out of it |
 | split | line broken in two, halves arriving from opposite sides |
+| zoom | grows into place, stepping up the ladder as it lands |
+| wipeup | shutter retreating downward instead of across |
+| glitch | rows tear sideways, with occasional bigger slips |
+| shadow | a dim offset copy behind, closing in as the line lands |
+| mirror | the block sits high with a dimmed echo beneath it |
+| decode | characters settle out of noise, left to right |
+| rowfade | rows arrive one at a time from alternating sides |
+| stamp | lands oversized for a beat, then settles onto the fitted size |
 
 Type is TFT_eSPI's built-in font 1 — a 6x8 cell — scaled by integer multiples.
 That keeps it crisp at any size, which is what makes large blocky type look
@@ -213,8 +221,13 @@ there is no long-lived secret on the device at all.
 
 | input | action |
 |---|---|
-| GPIO 0 button | cycle through the visualisers |
+| GPIO 0 button | cycle styles (lyrics mode) or visualisers (visuals mode) |
 | GPIO 47 button | switch visuals <-> lyrics |
+
+Lyrics mode shows lyrics and nothing else: gaps between lines are black,
+and a track with no synced lyrics says so rather than sitting blank.
+A locked style pairs a scene with a typeface -- 18 and 5 are coprime, so
+stepping the index walks every scene while the face keeps changing too.
 | serial `m` | switch visuals <-> lyrics |
 | serial `n` | next visualiser |
 | serial `A` | back to the per-track visualiser |
