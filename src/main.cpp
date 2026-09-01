@@ -47,19 +47,20 @@ static int      fps = 0;
 // Derived from the Spotify track id so a given song always looks the same.
 static volatile uint32_t gTrackSeed = 0;
 
-// Right button toggles between the two. Left button cycles whatever the
-// current mode has to cycle: lyric styles in MODE_LYRICS, visualisers in
-// MODE_VIZ. MODE_LYRICS shows lyrics and nothing else -- gaps are black.
+// Right button toggles between the two. Left button re-rolls the look of the
+// line currently on screen in MODE_LYRICS, and cycles the visualiser in
+// MODE_VIZ. MODE_LYRICS shows lyrics and nothing else: short gaps hold the
+// last line, long ones float music notes.
 enum { MODE_LYRICS = 0, MODE_VIZ = 1 };
 static int gMode = MODE_LYRICS;
 static int gVizOverride   = -1;      // -1 = whichever the track hashes to
-static int gStyleOverride = -1;      // -1 = a different look every line
 static uint8_t  rotation = SCREEN_ROTATION;
 
 // Brief on-screen confirmation after a button press, so a press that does
 // nothing is distinguishable from a press that was never seen.
 static char     gToast[28] = {0};
 static uint32_t gToastUntil = 0;
+static bool     gStylePending = false;
 static void toast(const char* fmt, const char* arg) {
   snprintf(gToast, sizeof(gToast), fmt, arg);
   gToastUntil = millis() + 1400;
@@ -273,12 +274,23 @@ void loop() {
   static uint32_t demoStart = millis();
 
   if (clicked(btnL)) {
-    gVizOverride = (gVizOverride + 1) % VIZ_COUNT;
-    Serial.printf("[viz] %s (locked)\n", vizNameAt(gVizOverride));
+    if (gMode == MODE_VIZ) {
+      gVizOverride = (gVizOverride + 1) % VIZ_COUNT;
+      Serial.printf("[viz] %s (locked)\n", vizNameAt(gVizOverride));
+      toast("%s", vizNameAt(gVizOverride));
+    } else {
+      // Re-roll the look of whatever line is on screen right now. Shifting the
+      // seed changes scene AND typeface together, so every press is a visible
+      // change. (Locking one style instead pinned every line to the same look,
+      // which is a different thing and reads as nothing happening.)
+      sceneSalt += 7;
+      gStylePending = true;      // named in the toast once the frame has drawn
+    }
   }
   if (clicked(btnR)) {
     gMode = (gMode == MODE_LYRICS) ? MODE_VIZ : MODE_LYRICS;
     Serial.printf("[mode] %s\n", gMode == MODE_VIZ ? "visuals" : "lyrics");
+    toast("%s", gMode == MODE_VIZ ? "visuals" : "lyrics");
   }
 
   while (Serial.available()) {
@@ -288,9 +300,9 @@ void loop() {
     else if (c == 'm') { gMode = (gMode == MODE_LYRICS) ? MODE_VIZ : MODE_LYRICS; }
     else if (c == 'n') {
       if (gMode == MODE_VIZ) gVizOverride = (gVizOverride + 1) % VIZ_COUNT;
-      else gStyleOverride = (gStyleOverride + 1) % TYPE_STYLE_COUNT;
+      else { sceneSalt += 7; gStylePending = true; }
     }
-    else if (c == 'A') { gVizOverride = -1; gStyleOverride = -1; }
+    else if (c == 'A') { gVizOverride = -1; }
     else if (c == 'l') {
       // Force a lyrics re-fetch on the next poll by forgetting which track is
       // loaded. Makes the LRCLIB path testable without changing songs.
@@ -322,8 +334,7 @@ void loop() {
                                                   : startMs + 4000;
     uint32_t age  = posMs > startMs ? posMs - startMs : 0;
     uint32_t hold = nextMs > startMs ? nextMs - startMs : 3000;
-    typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt,
-             gStyleOverride);
+    typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt);
   } else if (gMode == MODE_LYRICS) {
     // A short gap holds the last line, which reads as the singer pausing.
     // Only a prolonged one gives up and floats notes instead.
@@ -343,7 +354,7 @@ void loop() {
       uint32_t st = lyrics.timeAt(held);
       typeDraw(s, lyrics.text(held), 100000,
                gapStart > st ? gapStart - st : 3000,
-               (uint32_t)held + sceneSalt, gStyleOverride);
+               (uint32_t)held + sceneSalt);
     }
   } else if (live) {
     // Visuals mode: the visualiser with the seek bar and track details.
@@ -369,10 +380,18 @@ void loop() {
       Serial.printf("[line %d] %-8s %-8s %3d chars  %d rows%s%s\n",
                     idx, styleNm, faceNm,
                     (int)strlen(lyrics.text(idx)), fr,
-                    gStyleOverride >= 0 ? "  locked" : "",
                     clipped ? "   *** CLIPPED ***" : "");
     }
     lastLineIdx = idx;
+  }
+
+  // Name the style that actually got drawn, once the frame has resolved it.
+  if (gStylePending) {
+    const char* sn; const char* fn;
+    typeLastDrawn(sn, fn);
+    Serial.printf("[style] %s / %s\n", sn, fn);
+    toast("%s", sn);
+    gStylePending = false;
   }
 
   if (gToast[0] && (int32_t)(millis() - gToastUntil) < 0) {

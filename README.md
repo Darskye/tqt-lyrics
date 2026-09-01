@@ -221,7 +221,7 @@ there is no long-lived secret on the device at all.
 
 | input | action |
 |---|---|
-| GPIO 0 button | cycle styles (lyrics mode) or visualisers (visuals mode) |
+| GPIO 0 button | re-roll the current line's style (lyrics) / cycle visualiser (visuals) |
 | GPIO 47 button | switch visuals <-> lyrics |
 
 Lyrics mode shows lyrics and nothing else -- no visualiser underneath. A short
@@ -233,8 +233,10 @@ and artist beneath, which is also what a track with no synced lyrics gets.
 GFX free font are ASCII only, so U+2669..U+266F -- the music symbols -- are
 simply not in them and would render as garbage. Drawing them from primitives
 also means they scale and animate freely.
-A locked style pairs a scene with a typeface -- 18 and 5 are coprime, so
-stepping the index walks every scene while the face keeps changing too.
+In lyrics mode the left button re-rolls the look of the line on screen right
+now: it shifts the seed, which changes scene and typeface together, so every
+press is a visible change. Measured: 8 presses gave 8 distinct scene/face
+pairings.
 | serial `m` | switch visuals <-> lyrics |
 | serial `n` | next visualiser |
 | serial `A` | back to the per-track visualiser |
