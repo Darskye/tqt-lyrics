@@ -224,8 +224,15 @@ there is no long-lived secret on the device at all.
 | GPIO 0 button | cycle styles (lyrics mode) or visualisers (visuals mode) |
 | GPIO 47 button | switch visuals <-> lyrics |
 
-Lyrics mode shows lyrics and nothing else: gaps between lines are black,
-and a track with no synced lyrics says so rather than sitting blank.
+Lyrics mode shows lyrics and nothing else -- no visualiser underneath. A short
+gap holds the last line, which reads as the singer pausing. Only a prolonged
+one (over `NOTES_AFTER_MS`, 4s) gives up and floats music notes with the track
+and artist beneath, which is also what a track with no synced lyrics gets.
+
+**The note glyphs are drawn, not typed.** TFT_eSPI's built-in fonts and every
+GFX free font are ASCII only, so U+2669..U+266F -- the music symbols -- are
+simply not in them and would render as garbage. Drawing them from primitives
+also means they scale and animate freely.
 A locked style pairs a scene with a typeface -- 18 and 5 are coprime, so
 stepping the index walks every scene while the face keeps changing too.
 | serial `m` | switch visuals <-> lyrics |

@@ -35,6 +35,15 @@ const char* typeStyleName(int styleIndex);
 void typeDrawCard(TFT_eSprite& s, const char* track, const char* artist,
                   const char* status, uint32_t ms, uint32_t seed);
 
+// Shown during a prolonged gap between lyric lines, and for tracks with no
+// synced lyrics. Floating note glyphs with the track and artist beneath.
+//
+// The glyphs are drawn geometrically rather than typed: TFT_eSPI's built-in
+// fonts and the GFX free fonts are ASCII only, so U+2669..U+266F (the music
+// symbols) are simply not in them and would render as garbage.
+void typeDrawNotes(TFT_eSprite& s, const char* track, const char* artist,
+                   float tSec, uint32_t seed);
+
 const char* typeSceneName(uint32_t seed);
 const char* typeFaceName(uint32_t seed);
 uint16_t    typeInk(uint32_t seed);

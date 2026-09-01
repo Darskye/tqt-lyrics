@@ -661,3 +661,94 @@ void typeDrawCard(TFT_eSprite& s, const char* track, const char* artist,
   s.setTextFont(1);
   s.setTextSize(1);
 }
+
+// ---------------------------------------------------------------- notes
+// Music glyphs drawn from primitives. The Unicode symbols cannot be used --
+// see the note in typeview.h -- and drawing them means they can be scaled and
+// animated freely instead of being stuck at whatever a font offers.
+static void noteHead(TFT_eSprite& s, int x, int y, int sc, uint16_t c) {
+  s.fillEllipse(x, y, 2 * sc + 1, (3 * sc) / 2, c);
+}
+
+// kind: 0 quarter, 1 eighth, 2 beamed pair, 3 sharp, 4 flat
+static void drawNote(TFT_eSprite& s, int kind, int x, int y, int sc, uint16_t c) {
+  int stem = 9 * sc;
+  switch (kind) {
+    case 0:
+      noteHead(s, x, y, sc, c);
+      s.fillRect(x + 2 * sc, y - stem, sc, stem, c);
+      break;
+    case 1:
+      noteHead(s, x, y, sc, c);
+      s.fillRect(x + 2 * sc, y - stem, sc, stem, c);
+      for (int i = 0; i < 3 * sc; i++)                     // flag
+        s.drawFastVLine(x + 3 * sc + i, y - stem + i, 2 * sc + i / 2, c);
+      break;
+    case 2: {
+      int dx = 8 * sc;
+      noteHead(s, x, y, sc, c);
+      noteHead(s, x + dx, y + sc, sc, c);
+      s.fillRect(x + 2 * sc, y - stem, sc, stem, c);
+      s.fillRect(x + dx + 2 * sc, y + sc - stem, sc, stem, c);
+      s.fillRect(x + 2 * sc, y - stem, dx + sc, (3 * sc) / 2 + 1, c);   // beam
+      break;
+    }
+    case 3:                                                // sharp
+      s.fillRect(x - sc, y - 5 * sc, sc, 11 * sc, c);
+      s.fillRect(x + 2 * sc, y - 6 * sc, sc, 11 * sc, c);
+      s.fillRect(x - 3 * sc, y - 2 * sc, 8 * sc, sc, c);
+      s.fillRect(x - 3 * sc, y + 2 * sc, 8 * sc, sc, c);
+      break;
+    default:                                               // flat
+      s.fillRect(x - sc, y - 8 * sc, sc, 11 * sc, c);
+      s.drawEllipse(x + sc, y, 2 * sc, 2 * sc, c);
+      s.fillRect(x, y - 2 * sc, sc, 4 * sc, c);
+      break;
+  }
+}
+
+void typeDrawNotes(TFT_eSprite& s, const char* track, const char* artist,
+                   float tSec, uint32_t seed) {
+  s.fillSprite(INK_OFF);
+
+  // Notes rise and sway, respawning at the bottom, so a long instrumental
+  // still reads as "playing" rather than as a dead panel.
+  const int N = 7;
+  for (int i = 0; i < N; i++) {
+    uint32_t h = mix(seed ^ (uint32_t)i, 41);
+    float ph   = ((h & 1023) / 1024.0f);
+    float spd  = 0.055f + ((h >> 10) & 15) * 0.007f;
+    float life = fmodf(ph + tSec * spd, 1.0f);
+    int   kind = (int)((h >> 14) % 5);
+    int   sc   = 1 + (int)((h >> 18) % 2);
+    float bx   = 12.0f + ((h >> 20) & 127) * 0.80f;
+
+    float y = 96.0f - life * 96.0f;
+    float x = bx + sinf(tSec * 1.1f + i * 1.7f) * 9.0f;
+
+    // Fade in at the bottom and out at the top rather than popping.
+    float k = life < 0.15f ? life / 0.15f : (life > 0.8f ? (1.0f - life) / 0.2f : 1.0f);
+    int lum = (int)(31 * k);
+    if (lum < 3) continue;
+    uint16_t c = (uint16_t)((lum << 11) | ((lum << 1) << 5) | lum);
+    drawNote(s, kind, (int)x, (int)y, sc, c);
+  }
+
+  // Track and artist along the bottom.
+  s.setTextDatum(TC_DATUM);
+  s.setTextFont(1);
+  s.setTextSize(1);
+  char buf[48];
+  if (track && *track) {
+    strncpy(buf, track, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+    while (s.textWidth(buf) > SCR_W - 6 && strlen(buf) > 4) buf[strlen(buf) - 1] = 0;
+    s.setTextColor(INK_ON);
+    s.drawString(buf, SCR_W / 2, SCR_H - 22);
+  }
+  if (artist && *artist) {
+    strncpy(buf, artist, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+    while (s.textWidth(buf) > SCR_W - 6 && strlen(buf) > 4) buf[strlen(buf) - 1] = 0;
+    s.setTextColor(0x9CF3);
+    s.drawString(buf, SCR_W / 2, SCR_H - 11);
+  }
+}

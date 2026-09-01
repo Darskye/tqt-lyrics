@@ -27,6 +27,10 @@
 
 #define SPOTIFY_POLL_MS 5000
 
+// How long a gap between lyric lines has to run before the panel gives up
+// holding the last line and shows the floating notes instead.
+#define NOTES_AFTER_MS 4000
+
 // Panel orientation. 0 and 2 are the two portrait orientations, 180 apart.
 // Cycle live with 'o' over serial to find yours, then set it here so it sticks
 // across reflashes.
@@ -143,6 +147,7 @@ static bool clicked(Btn& b) {
   if (now != b.last && (ms - b.tEdge) > 30) {
     b.tEdge = ms;
     b.last  = now;
+    Serial.printf("[btn] gpio%d -> %s\n", b.pin, now ? "released" : "PRESSED");
     if (!now) return true;
   }
   return false;
@@ -204,6 +209,9 @@ void setup() {
   pinMode(PIN_BTN_R, INPUT_PULLUP);
 
   selfTestLyrics();
+  Serial.printf("[btn] idle levels: gpio%d=%d gpio%d=%d (1 = not pressed)\n",
+                PIN_BTN_L, digitalRead(PIN_BTN_L),
+                PIN_BTN_R, digitalRead(PIN_BTN_R));
 
   tft.init();
   tft.setRotation(rotation);
@@ -308,16 +316,25 @@ void loop() {
     typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt,
              gStyleOverride);
   } else if (gMode == MODE_LYRICS) {
-    // Lyrics mode shows lyrics and nothing else. Gaps between lines are
-    // deliberately black; a track with no synced lyrics at all says so rather
-    // than sitting blank as though it had crashed.
-    s.fillSprite(INK_OFF);
-    if (live && !haveLyrics) {
-      s.setTextFont(1);
-      s.setTextSize(1);
-      s.setTextDatum(MC_DATUM);
-      s.setTextColor(0x8410);
-      s.drawString("no lyrics", SCR_W / 2, SCR_H / 2);
+    // A short gap holds the last line, which reads as the singer pausing.
+    // Only a prolonged one gives up and floats notes instead.
+    int held = -1;
+    for (int k = idx; k >= 0; k--)
+      if (lyrics.text(k)[0]) { held = k; break; }
+
+    uint32_t gapStart = (idx >= 0) ? lyrics.timeAt(idx) : 0;
+    uint32_t gapAge   = posMs > gapStart ? posMs - gapStart : 0;
+
+    if (!haveLyrics || held < 0 || gapAge > NOTES_AFTER_MS) {
+      typeDrawNotes(s, live ? np.track : "", live ? np.artist : "",
+                    (float)millis() * 0.001f, gTrackSeed);
+    } else {
+      // Redraw the last line fully settled: a big age skips the entry
+      // animation so it sits still rather than replaying.
+      uint32_t st = lyrics.timeAt(held);
+      typeDraw(s, lyrics.text(held), 100000,
+               gapStart > st ? gapStart - st : 3000,
+               (uint32_t)held + sceneSalt, gStyleOverride);
     }
   } else if (live) {
     // Visuals mode: the visualiser with the seek bar and track details.
