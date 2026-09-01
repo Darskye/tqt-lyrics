@@ -78,16 +78,25 @@ so the palette drifts continuously rather than sitting still.
 
 ### lyricform
 
-Particles drift on a noise flow field and converge into the lyric line as it
-arrives, scattering again between lines. The line is rasterised offscreen into
-an 8bpp mask and its lit pixels become particle targets, sampled evenly down to
-the particle count -- taking the first N instead would fill only the top rows
-and leave the rest of the line unformed.
+Particles drift on a noise flow field and assemble into **one word at a time**,
+scattering and re-forming for each. Words share the line's time in proportion
+to their length.
+
+One word rather than the whole line, because a full line has to shrink to fit
+128px and ends up clipped -- a single word can be set large and stay legible.
+
+The word is rasterised offscreen into an 8bpp mask and its lit pixels become
+particle targets, sampled evenly down to the particle count. Taking the first N
+instead would fill only the top rows and leave the rest of the word unformed.
+
+**A quarter of the field never settles.** Without strays the whole screen
+freezes the instant a word forms, which kills any sense of a living particle
+system. Converged particles also keep a small wander, so the word breathes
+rather than turning into a frozen bitmap.
 
 Colour while scattered, white once assembled: chaos gets to be colourful, but
-text has to be legible.
-
-Rasterising happens on line change only, never per frame.
+text has to be legible. Rasterising happens on word change only, never per
+frame.
 
 ### They do not react to the audio
 

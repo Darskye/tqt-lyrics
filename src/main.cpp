@@ -107,6 +107,60 @@ static const char* kDemoLrc =
     "[00:27.00]then it follows spotify\n"
     "[00:30.00]\n";
 
+
+// Picks the word of `line` that should be showing `age` into a `span`, and how
+// assembled it should be. Words share the line's time in proportion to their
+// length, which follows the singing better than an even split -- LRC carries
+// per-line stamps only, so within a line this is an approximation either way.
+//
+// The morph ramps up at the start of each word and back down before the next,
+// so the field scatters and re-forms for every word rather than sliding one
+// shape into another.
+static int wordSlotAt(const char* line, uint32_t age, uint32_t span,
+                      char* out, int outSize, float& morph) {
+  out[0] = 0;
+  morph = 0.0f;
+  if (!line || !*line || span == 0) return -1;
+
+  int total = 0, wc = 0;
+  for (const char* p = line; *p; ) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    const char* w = p;
+    while (*p && *p != ' ') p++;
+    total += (int)(p - w) + 1;
+    wc++;
+  }
+  if (wc == 0 || total == 0) return -1;
+
+  uint32_t acc = 0;
+  const char* p = line;
+  for (int i = 0; i < wc; i++) {
+    while (*p == ' ') p++;
+    const char* w = p;
+    while (*p && *p != ' ') p++;
+    int len = (int)(p - w);
+
+    uint32_t slot = (uint32_t)((uint64_t)span * (uint32_t)(len + 1) / (uint32_t)total);
+    if (slot < 260) slot = 260;          // never flash past faster than readable
+
+    if (age < acc + slot || i == wc - 1) {
+      int n = (len < outSize - 1) ? len : outSize - 1;
+      memcpy(out, w, n);
+      out[n] = 0;
+      float local = (float)(age - acc) / (float)slot;
+      if (local < 0.0f) local = 0.0f;
+      if (local > 1.0f) local = 1.0f;
+      float rise = local / 0.30f;          if (rise > 1.0f) rise = 1.0f;
+      float fall = (1.0f - local) / 0.25f; if (fall > 1.0f) fall = 1.0f;
+      morph = rise < fall ? rise : fall;
+      return i;
+    }
+    acc += slot;
+  }
+  return -1;
+}
+
 // ------------------------------------------------------------------ network
 static void netTask(void*) {
   netBegin();
@@ -348,23 +402,31 @@ void loop() {
   // as a visualiser: it assembles while a line is showing and scatters between
   // lines. Rasterising happens only on a line change, not per frame.
   {
-    static int morphLine = -2;
+    static int  morphLine = -2, morphWord = -1;
     bool onLine = idx >= 0 && lyrics.text(idx)[0];
-    if (onLine && idx != morphLine) {
-      vizMorphSet(maskSpr, lyrics.text(idx));
-      morphLine = idx;
-    } else if (!onLine) {
-      morphLine = -2;
-    }
     float m = 0.0f;
+
     if (onLine) {
-      uint32_t st  = lyrics.timeAt(idx);
-      uint32_t nx  = (idx + 1 < lyrics.count()) ? lyrics.timeAt(idx + 1) : st + 4000;
-      uint32_t age = posMs > st ? posMs - st : 0;
-      uint32_t lft = nx > posMs ? nx - posMs : 0;
-      float rise = age / 420.0f; if (rise > 1.0f) rise = 1.0f;
-      float fall = lft / 420.0f; if (fall > 1.0f) fall = 1.0f;
-      m = rise < fall ? rise : fall;      // ease in at the start, out at the end
+      uint32_t st   = lyrics.timeAt(idx);
+      uint32_t nx   = (idx + 1 < lyrics.count()) ? lyrics.timeAt(idx + 1) : st + 4000;
+      uint32_t span = nx > st ? nx - st : 3000;
+      uint32_t age  = posMs > st ? posMs - st : 0;
+
+      char word[40];
+      int wi = wordSlotAt(lyrics.text(idx), age, span, word, sizeof(word), m);
+      if (wi >= 0 && (idx != morphLine || wi != morphWord)) {
+        // One word at a time: a whole line has to shrink to fit and ends up
+        // clipped, whereas a single word can be set large.
+        vizMorphSet(maskSpr, word);
+        // Indices only -- the panel is the place for the words themselves.
+        Serial.printf("[morph] line %d word %d (%d chars)\n",
+                      idx, wi, (int)strlen(word));
+        morphLine = idx;
+        morphWord = wi;
+      }
+    } else {
+      morphLine = -2;
+      morphWord = -1;
     }
     vizMorphAmount(m);
   }

@@ -387,6 +387,10 @@ void vizMorphSet(TFT_eSprite& mask, const char* text) {
 
 static void fMorph(uint16_t* fb, float t, uint32_t sd) {
   const int N = MORPH_MAX;
+  // A quarter of the field never settles. Without strays the whole screen
+  // freezes the moment a word forms, which kills the sense that this is a
+  // living particle system that happens to be holding a shape.
+  const int CONVERGE = (N * 74) / 100;
   float m = g_morph;
   // Ease the assembly so particles arrive rather than snapping into place.
   float e = m * m * (3.0f - 2.0f * m);
@@ -402,19 +406,25 @@ static void fMorph(uint16_t* fb, float t, uint32_t sd) {
     float cy = by + (n2 - 0.5f) * 54.0f;
 
     float px = cx, py = cy;
-    if (g_mn > 0 && e > 0.001f) {
+    float settled = 0.0f;
+    if (i < CONVERGE && g_mn > 0 && e > 0.001f) {
       int ti = i % g_mn;
-      px = cx + ((float)g_mtx[ti] - cx) * e;
-      py = cy + ((float)g_mty[ti] - cy) * e;
+      // Keep a small wander even once landed, so the word breathes instead of
+      // turning into a frozen bitmap.
+      float jx = (vnoise((float)i * 0.61f, t * 1.7f, sd) - 0.5f) * 2.4f;
+      float jy = (vnoise(t * 1.6f, (float)i * 0.61f, sd) - 0.5f) * 2.4f;
+      px = cx + ((float)g_mtx[ti] + jx - cx) * e;
+      py = cy + ((float)g_mty[ti] + jy - cy) * e;
+      settled = e;
     }
 
     // Colour while scattered, white once formed: chaos gets to be colourful,
     // but text has to be legible.
-    int amp = 9 + (int)(e * 20.0f);
+    int amp = 9 + (int)(settled * 20.0f);
     int r, g, b;
     hue2rgb((int)(n1 * 190.0f + t * 20.0f), amp, r, g, b);
     g <<= 1;
-    int w2 = (int)(e * 32.0f);
+    int w2 = (int)(settled * 32.0f);
     r += ((amp - r) * w2) >> 5;
     g += (((amp << 1) - g) * w2) >> 5;
     b += ((amp - b) * w2) >> 5;
