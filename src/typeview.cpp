@@ -261,6 +261,118 @@ static void layoutFit(TFT_eSprite& s, const char* txt, const Face& face,
   }
 }
 
+
+// ---------------------------------------------------------------- chunking
+// A long line used to shrink until it fitted, which on a 128px panel meant
+// unreadably small type. Instead it is split into the fewest phrases that each
+// fit at a decently large face, shown in sequence across the line's own
+// duration. Each phrase gets time proportional to its length, which tracks the
+// singing better than dividing the line evenly -- LRC gives per-line stamps
+// only, so within a line this is an approximation either way.
+#define CHUNK_MAX   6
+#define CHUNK_CHARS (ROW_CHARS * 2)
+// The face phrases are measured against, counted from the LARGE end of the
+// ladder. Measuring from the small end let a 50-character line "fit" at a tiny
+// face and never split, which is the thing this is meant to prevent. Index 2
+// is roughly 12pt: big enough to read across the room, small enough that a
+// line rarely explodes into more than three or four phrases.
+#define CHUNK_RUNG 2
+
+// Hard cap on rows per phrase. Height alone is not enough of a constraint: at
+// a small face five rows still "fit", so a long line never split and stayed
+// unreadable. Capping rows is what actually forces big type and more
+// transitions.
+#define PHRASE_MAX_ROWS 3
+
+struct Chunks {
+  int  n;
+  int  totalLen;
+  char text[CHUNK_MAX][CHUNK_CHARS];
+};
+
+// Rows a candidate string needs at the face currently applied.
+static int rowsNeeded(TFT_eSprite& s, const char* txt, int maxW) {
+  char rows[ROW_MAX][ROW_CHARS];
+  bool ovf = false;
+  int n = wrapText(s, txt, rows, ROW_MAX, maxW, &ovf);
+  return ovf ? ROW_MAX + 1 : n;
+}
+
+static void chunkLine(TFT_eSprite& s, const char* text, const Face& face,
+                      int maxW, int maxH, Chunks& C) {
+  int rung = CHUNK_RUNG;
+  if (rung > face.n - 1) rung = face.n - 1;
+  applyRung(s, face.rungs[rung]);
+
+  int lineH   = s.fontHeight() + 1;
+  int maxRows = maxH / (lineH > 0 ? lineH : 1);
+  if (maxRows > PHRASE_MAX_ROWS) maxRows = PHRASE_MAX_ROWS;
+  if (maxRows < 1) maxRows = 1;
+
+  C.n = 0;
+  C.totalLen = (int)strlen(text);
+
+  char cur[CHUNK_CHARS];
+  cur[0] = 0;
+  const char* p = text;
+
+  while (*p && C.n < CHUNK_MAX) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+    const char* ws = p;
+    while (*p && *p != ' ') p++;
+    int wlen = (int)(p - ws);
+    if (wlen > CHUNK_CHARS - 1) wlen = CHUNK_CHARS - 1;
+    char word[CHUNK_CHARS];
+    memcpy(word, ws, wlen);
+    word[wlen] = 0;
+
+    char trial[CHUNK_CHARS];
+    if (cur[0]) snprintf(trial, sizeof(trial), "%s %s", cur, word);
+    else        snprintf(trial, sizeof(trial), "%s", word);
+
+    if (rowsNeeded(s, trial, maxW) <= maxRows || cur[0] == 0) {
+      strncpy(cur, trial, CHUNK_CHARS - 1);
+      cur[CHUNK_CHARS - 1] = 0;
+    } else {
+      strncpy(C.text[C.n], cur, CHUNK_CHARS - 1);
+      C.text[C.n][CHUNK_CHARS - 1] = 0;
+      C.n++;
+      strncpy(cur, word, CHUNK_CHARS - 1);
+      cur[CHUNK_CHARS - 1] = 0;
+    }
+  }
+  if (cur[0] && C.n < CHUNK_MAX) {
+    strncpy(C.text[C.n], cur, CHUNK_CHARS - 1);
+    C.text[C.n][CHUNK_CHARS - 1] = 0;
+    C.n++;
+  }
+  if (C.n == 0) {                       // degenerate: keep the line intact
+    strncpy(C.text[0], text, CHUNK_CHARS - 1);
+    C.text[0][CHUNK_CHARS - 1] = 0;
+    C.n = 1;
+  }
+}
+
+// Chunking walks the text repeatedly; caching keeps it off the per-frame path.
+static Chunks      g_chunks;
+static char        g_chunkKey[CHUNK_CHARS] = {0};
+static const Face* g_chunkFace = nullptr;
+static int         g_chunkIdx = 0;
+
+static const Chunks& chunksFor(TFT_eSprite& s, const char* text, const Face& face,
+                               int maxW, int maxH) {
+  if (g_chunkFace != &face || strncmp(g_chunkKey, text, CHUNK_CHARS - 1) != 0) {
+    chunkLine(s, text, face, maxW, maxH, g_chunks);
+    strncpy(g_chunkKey, text, CHUNK_CHARS - 1);
+    g_chunkKey[CHUNK_CHARS - 1] = 0;
+    g_chunkFace = &face;
+  }
+  return g_chunks;
+}
+
+void typeLastChunk(int& idx, int& count) { idx = g_chunkIdx; count = g_chunks.n; }
+
 // ---------------------------------------------------------------- draw
 const char* typeStyleName(int i) {
   return kSceneNames[((i % SC_COUNT) + SC_COUNT) % SC_COUNT];
@@ -286,6 +398,34 @@ void typeDraw(TFT_eSprite& s, const char* text,
   const Face& face = *fp;
   uint16_t ink = typeInk(seed);
   g_drawnFace = (int)(fp - kFaces);
+
+  // Split a long line into big phrases rather than shrinking it to fit, then
+  // pick whichever phrase this moment belongs to. Time is shared out in
+  // proportion to phrase length, which follows the singing more closely than
+  // an even split. LRC carries per-line stamps only, so within a line this is
+  // an approximation however it is done.
+  const Chunks& C = chunksFor(s, text, face, SCR_W - 12, SCR_H - 18);
+  if (C.n > 1) {
+    uint32_t span = holdMs ? holdMs : 3000;
+    uint32_t acc = 0, pickStart = 0, pickSpan = span;
+    int pick = C.n - 1;
+    for (int i = 0; i < C.n; i++) {
+      uint32_t slice = (uint32_t)((uint64_t)span * strlen(C.text[i]) /
+                                  (uint32_t)(C.totalLen ? C.totalLen : 1));
+      if (slice < 300) slice = 300;      // never flash past faster than readable
+      if (ageMs < acc + slice || i == C.n - 1) {
+        pick = i; pickStart = acc; pickSpan = slice;
+        break;
+      }
+      acc += slice;
+    }
+    g_chunkIdx = pick;
+    text   = C.text[pick];
+    ageMs  = (ageMs > pickStart) ? ageMs - pickStart : 0;
+    holdMs = pickSpan;
+  } else {
+    g_chunkIdx = 0;
+  }
 
   int wc = wordCount(text);
   if (sc == SC_HERO  && wc < 2) sc = SC_STACK;

@@ -118,6 +118,18 @@ Type is TFT_eSPI's built-in font 1 — a 6x8 cell — scaled by integer multiple
 That keeps it crisp at any size, which is what makes large blocky type look
 deliberate rather than stretched.
 
+**Long lines split into phrases rather than shrinking.** A line that will not
+fit at a large face is broken at word boundaries into the fewest phrases that
+each fit in at most 3 rows, shown in sequence across the line's own duration.
+Two constraints matter and only one is obvious: capping the *height* is not
+enough, because at a small face five rows still fit and the line never splits.
+Capping rows per phrase is what actually forces big type.
+
+Each phrase gets time in proportion to its length, which tracks the singing
+better than dividing evenly. LRC carries per-line timestamps only -- there is
+no word-level timing in what LRCLIB serves -- so within a line this is an
+approximation however it is done.
+
 **Nothing is ever clipped.** `layoutFit()` steps the size down until the whole
 line fits its box, and `wrapText()` reports overflow rather than silently
 dropping rows. The floor is size 1: 21 columns by 16 rows, ~330 characters,

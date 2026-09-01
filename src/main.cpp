@@ -377,9 +377,11 @@ void loop() {
       // picked -- otherwise a locked style is invisible in the log.
       const char* styleNm; const char* faceNm;
       typeLastDrawn(styleNm, faceNm);
-      Serial.printf("[line %d] %-8s %-8s %3d chars  %d rows%s%s\n",
+      int ci, cn;
+      typeLastChunk(ci, cn);
+      Serial.printf("[line %d] %-8s %-8s %3d chars  %d rows  %d phrase%s%s\n",
                     idx, styleNm, faceNm,
-                    (int)strlen(lyrics.text(idx)), fr,
+                    (int)strlen(lyrics.text(idx)), fr, cn, cn == 1 ? "" : "s",
                     clipped ? "   *** CLIPPED ***" : "");
     }
     lastLineIdx = idx;

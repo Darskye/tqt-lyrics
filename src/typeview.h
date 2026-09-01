@@ -54,3 +54,7 @@ void typeLastFit(int& rows, bool& clipped);
 
 // The scene and typeface typeDraw actually resolved and drew.
 void typeLastDrawn(const char*& scene, const char*& face);
+
+// Which phrase of a split line is showing, and how many the line became.
+// count == 1 means the line fitted whole and was not split.
+void typeLastChunk(int& idx, int& count);
