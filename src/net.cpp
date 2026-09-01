@@ -191,6 +191,7 @@ bool netPollSpotify(NowPlaying& out) {
   filter["is_playing"]               = true;
   filter["item"]["name"]             = true;
   filter["item"]["duration_ms"]      = true;
+  filter["item"]["id"]               = true;
   filter["item"]["album"]["name"]    = true;
   filter["item"]["artists"][0]["name"] = true;
   // Spotify lists covers largest first (640/300/64). We want the one nearest
@@ -215,6 +216,9 @@ bool netPollSpotify(NowPlaying& out) {
   strncpy(out.artist, item["artists"][0]["name"] | "", sizeof(out.artist) - 1);
   out.artist[sizeof(out.artist) - 1] = '\0';
 
+  strncpy(out.trackId, item["id"] | "", sizeof(out.trackId) - 1);
+  out.trackId[sizeof(out.trackId) - 1] = 0;
+
   out.artUrl[0] = 0;
   JsonArray imgs = item["album"]["images"];
   int bestDelta = 1 << 30;
@@ -236,6 +240,27 @@ bool netPollSpotify(NowPlaying& out) {
   out.valid      = true;
   setStatus("ok");
   return true;
+}
+
+int netProbeAudioFeatures(const char* trackId) {
+  if (!netConnected() || !trackId || !*trackId) return -1;
+  if (accessToken[0] == 0 && !refreshAccessToken()) return -2;
+
+  String url = "https://api.spotify.com/v1/audio-features/" + String(trackId);
+  WiFiClientSecure client;
+  applyTls(client);
+  HTTPClient http;
+  if (!http.begin(client, url)) return -3;
+
+  char authHdr[300];
+  snprintf(authHdr, sizeof(authHdr), "Bearer %s", accessToken);
+  http.addHeader("Authorization", authHdr);
+
+  int code = http.GET();
+  String body = http.getString();
+  http.end();
+  Serial.printf("[probe] audio-features -> %d : %s\n", code, body.c_str());
+  return code;
 }
 
 // ------------------------------------------------------------------ lyrics

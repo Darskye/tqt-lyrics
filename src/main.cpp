@@ -19,7 +19,7 @@
 #include "lyrics.h"
 #include "typeview.h"
 #include "net.h"
-#include "albumart.h"
+#include "viz.h"
 
 #define PIN_BTN_L  0    // re-roll the scene for the current line
 #define PIN_BTN_R  47   // toggle the status readout
@@ -39,11 +39,9 @@ static int         cur = 0;
 static bool     showStatus = false;
 static uint32_t sceneSalt  = 0;      // shifts scene choice without touching timing
 static int      fps = 0;
-// Decoded cover for the current track, shown whenever there is no lyric on
-// screen. Written by netTask, read by loop -- gHaveArt gates it so a
-// half-decoded image is never drawn.
-static uint16_t      gArt[ART_PX];
-static volatile bool gHaveArt = false;
+// Per-track seed: picks which visualiser a song gets, and its character.
+// Derived from the Spotify track id so a given song always looks the same.
+static volatile uint32_t gTrackSeed = 0;
 static uint8_t  rotation = SCREEN_ROTATION;
 
 // ------------------------------------------------------------------ playback
@@ -56,6 +54,13 @@ static int        lastLineIdx = -2;
 static volatile uint32_t progressBaseMs = 0;
 static volatile uint32_t progressAtMs   = 0;
 static volatile bool     isPlaying      = false;
+
+// FNV-1a over the track id: stable across reboots, well spread across songs.
+static uint32_t trackSeed(const char* id) {
+  uint32_t h = 2166136261u;
+  for (const char* p = id; p && *p; p++) { h ^= (uint8_t)*p; h *= 16777619u; }
+  return h ? h : 1;
+}
 
 static uint32_t playbackMs() {
   if (!isPlaying) return progressBaseMs;
@@ -102,11 +107,10 @@ static void netTask(void*) {
               haveLyrics = false;
               Serial.println("[lyrics] none on lrclib for this track");
             }
-            gHaveArt = false;
-            gHaveArt = artFetchBitmap(fresh.artUrl, gArt);
-
             strncpy(loadedTrack, fresh.track, sizeof(loadedTrack) - 1);
             loadedTrack[sizeof(loadedTrack) - 1] = 0;
+            gTrackSeed  = trackSeed(fresh.trackId);
+            Serial.printf("[viz] %s\n", vizName(gTrackSeed));
             lastLineIdx = -2;
           }
           np = fresh;
@@ -256,18 +260,7 @@ void loop() {
       loadedTrack[0] = 0;
       Serial.println("[lrclib] forcing re-fetch on next poll");
     }
-    else if (c == 'a') {
-      // Dump the decoded cover as hex so it can be reconstructed off-device
-      // and compared against the source image, instead of guessing from how
-      // it looks on a 0.85 inch panel.
-      Serial.printf("[artdump] begin %d %d %s\n", ART_W, ART_H,
-                    gHaveArt ? "valid" : "EMPTY");
-      for (int y = 0; y < ART_H; y++) {
-        for (int x = 0; x < ART_W; x++) Serial.printf("%04X", gArt[y * ART_W + x]);
-        Serial.println();
-      }
-      Serial.println("[artdump] end");
-    }
+    else if (c == 'v') netProbeAudioFeatures(np.trackId);
     else if (c == 'o') {
       rotation = (rotation + 1) & 3;
       tft.setRotation(rotation);
@@ -291,13 +284,15 @@ void loop() {
     uint32_t age  = posMs > startMs ? posMs - startMs : 0;
     uint32_t hold = nextMs > startMs ? nextMs - startMs : 3000;
     typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt);
+  } else if (live) {
+    // Paused, between lines, or no lyrics for this track: run the visualiser
+    // with the seek bar and track details along the bottom.
+    float prog = np.durationMs ? (float)posMs / (float)np.durationMs : 0.0f;
+    vizDraw(s, gTrackSeed + sceneSalt, (float)millis() * 0.001f, prog,
+            np.track, np.artist);
   } else {
-    // Between lines and between tracks: hold the track card rather than
-    // flashing an empty panel.
-    // Paused, between lines, or no lyrics for this track: show the cover.
-    typeDrawCard(s, gArt, gHaveArt,
-                 live ? np.track : "", live ? np.artist : "",
-                 netStatus(), millis(), sceneSalt);
+    // Nothing playing at all -- no track, no progress to show.
+    typeDrawCard(s, "", "", netStatus(), millis(), sceneSalt);
   }
 
   if (idx != lastLineIdx) {

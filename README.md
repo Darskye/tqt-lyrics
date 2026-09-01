@@ -33,34 +33,41 @@ aggregator that includes the whole set. Do not `#include` individual font
 headers on top of that: they carry no include guards and you get redefinition
 errors.
 
-## Album art
+## Visualisers
 
 Whenever there is no lyric on screen -- paused, between lines, or a track with
-no synced lyrics -- the panel shows the cover and the track name.
+no synced lyrics -- one of six particle visualisers runs, with the track,
+artist and a seek bar along the bottom over a darkened band.
 
-The cover fills the panel, with track and artist over a darkened band.
+| visualiser | what it does |
+|---|---|
+| spiral | phyllotaxis field at the golden angle, rotating so the arms swirl inward |
+| starfield | particles accelerating outward from centre, respawning at the middle |
+| rain | columns of falling pixels at independent speeds, brightest at the head |
+| orbits | concentric rings each turning at its own rate, shearing into arms |
+| wave | a lattice displaced by two crossing travelling waves |
+| bloom | rings expanding from centre and fading, staggered so one always arrives |
 
-**Fetch the ~300px cover, not the 64x64 thumbnail, and fit rather than crop.**
-Decoding a 300px cover at scale 2 gives 150px, and cropping that to 128 throws
-away 26% of the sleeve -- 10px off each side. Covers put their artwork and
-lettering right to the edge, so a centre crop reads as a zoomed-in mistake.
-Decode at scale 2 into scratch, then bilinear-resample 150 -> 128; that keeps
-the whole cover and is far sharper than decoding at the next scale down, which
-would leave only ~75px.
+Which one a song gets is picked from a FNV-1a hash of its Spotify track id, so
+every track has its own visualiser and character, and the same track always
+looks the same.
 
-Verified by dumping the decoded buffer over serial (`a`) and diffing it against
-the source: mean per-pixel error 6.0 against the full cover fitted to 128,
-versus 40.2 against a centre crop.
+### It does not react to the audio, and does not pretend to
 
-What remains is the panel, not the pipeline: 128x128 at RGB565 is 65k colours,
-so smooth gradients still band. Fetching a larger source cannot fix that.
+There is no audio signal available on this device. Spotify deprecated
+`/audio-features` and `/audio-analysis` in November 2024; this app returns
+**403** from both, verified against the live API rather than assumed. The board
+has no microphone. So there is no beat, tempo or loudness to react to.
 
-Decode it with `TJpgDec.setSwapBytes(false)`. The pairing TJpg_Decoder documents
-is `true`, but that is for callbacks pushing straight to a display already
-configured to swap; here it reverses the bytes and scrambles the channels. This
-is not a red/blue swap -- it mangles all three -- and it looks plausible enough
-to miss. Verified against the source image: for one cover the centre pixel must
-read `0x2040`, and `true` produced `0x4020`.
+What actually drives the motion is real, just not audio:
+
+- **Playback position**, so the seek bar is genuinely accurate and motion
+  advances with the song
+- **A per-track seed**, so songs differ from each other consistently
+
+Genuine reactivity needs an I2S microphone (an INMP441 or similar, a few
+dollars) on the breakout pads, feeding an FFT for real onset detection. That is
+the only honest route to it -- no API will provide it.
 
 ## Scenes
 

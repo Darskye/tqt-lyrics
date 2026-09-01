@@ -14,6 +14,7 @@ struct NowPlaying {
   char     track[100];
   char     artist[100];
   char     album[100];
+  char     trackId[40];  // Spotify track id, for the audio-features probe
   char     artUrl[160];  // smallest album-art thumbnail Spotify offers
   uint32_t progressMs;
   uint32_t durationMs;
@@ -33,3 +34,8 @@ bool netPollSpotify(NowPlaying& out);
 // Fetches synced LRC lyrics. Returns true and fills `body` on success;
 // false when the track has no synced lyrics on LRCLIB.
 bool netFetchLyrics(const NowPlaying& np, String& body);
+
+// Probes /v1/audio-features/{id} and returns the HTTP status. Spotify
+// deprecated that endpoint in Nov 2024; this establishes empirically
+// whether this app has access rather than assuming either way.
+int netProbeAudioFeatures(const char* trackId);

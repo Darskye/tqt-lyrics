@@ -22,12 +22,11 @@
 void typeDraw(TFT_eSprite& s, const char* text,
               uint32_t ageMs, uint32_t holdMs, uint32_t seed);
 
-// Shown whenever there is no lyric to show: paused, between lines, or a track
-// with no synced lyrics. Displays the cover art and the track name.
-// `art` may be null / `haveArt` false, in which case it falls back to type.
-void typeDrawCard(TFT_eSprite& s, const uint16_t* art, bool haveArt,
-                  const char* track, const char* artist, const char* status,
-                  uint32_t ms, uint32_t seed);
+// Shown only when nothing is playing at all -- a status line and a slow caret,
+// so the panel never looks dead. Anything with a track behind it goes to the
+// visualiser instead (viz.h).
+void typeDrawCard(TFT_eSprite& s, const char* track, const char* artist,
+                  const char* status, uint32_t ms, uint32_t seed);
 
 const char* typeSceneName(uint32_t seed);
 const char* typeFaceName(uint32_t seed);

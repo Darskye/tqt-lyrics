@@ -1,5 +1,4 @@
 #include "typeview.h"
-#include "albumart.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -439,9 +438,8 @@ void typeDraw(TFT_eSprite& s, const char* text,
 }
 
 // ---------------------------------------------------------------- card
-void typeDrawCard(TFT_eSprite& s, const uint16_t* art, bool haveArt,
-                  const char* track, const char* artist, const char* status,
-                  uint32_t ms, uint32_t seed) {
+void typeDrawCard(TFT_eSprite& s, const char* track, const char* artist,
+                  const char* status, uint32_t ms, uint32_t seed) {
   s.fillSprite(INK_OFF);
   uint16_t ink = typeInk(seed);
 
@@ -456,49 +454,6 @@ void typeDrawCard(TFT_eSprite& s, const uint16_t* art, bool haveArt,
     return;
   }
 
-  if (haveArt && art) {
-    // Full-bleed cover, with the title over a darkened band so it stays
-    // readable whatever the sleeve happens to be doing underneath.
-    s.pushImage(0, 0, ART_W, ART_H, art);
-
-    Layout T, A;
-    bool hasArtist = artist && *artist;
-    layoutFit(s, track, FACE_SANS, SCR_W - 10, 40, T);
-    if (hasArtist) layoutFit(s, artist, FACE_PIXEL, SCR_W - 10, 18, A);
-
-    int bandH = T.blockH + (hasArtist ? A.blockH + 3 : 0) + 10;
-    int bandY = SCR_H - bandH;
-
-    uint16_t* px = (uint16_t*)s.getPointer();
-    for (int y = bandY; y < SCR_H; y++) {
-      uint16_t* row = px + y * SCR_W;
-      for (int x = 0; x < SCR_W; x++) {
-        uint16_t c = row[x];
-        row[x] = (uint16_t)(((((c >> 11) & 0x1F) >> 2) << 11) |
-                            ((((c >> 5)  & 0x3F) >> 2) <<  5) |
-                            (( (c        & 0x1F) >> 2)));
-      }
-    }
-    s.drawFastHLine(0, bandY, SCR_W, ink);
-
-    s.setTextDatum(TC_DATUM);
-    s.setTextColor(ink);
-
-    applyRung(s, T.rung);
-    for (int i = 0; i < T.nRows; i++)
-      s.drawString(T.rows[i], SCR_W / 2, bandY + 5 + i * T.lineH);
-
-    if (hasArtist) {
-      applyRung(s, A.rung);
-      int ay = bandY + 5 + T.blockH + 3;
-      for (int i = 0; i < A.nRows; i++)
-        s.drawString(A.rows[i], SCR_W / 2, ay + i * A.lineH);
-    }
-
-    s.setTextFont(1);
-    s.setTextSize(1);
-    return;
-  }
 
   int textTop = 10;
   Layout T;
@@ -510,7 +465,7 @@ void typeDrawCard(TFT_eSprite& s, const uint16_t* art, bool haveArt,
     s.drawString(T.rows[i], SCR_W / 2, textTop + i * T.lineH);
 
   // The artist only fits when the cover is not taking the top half.
-  if (!haveArt && artist && *artist) {
+  if (artist && *artist) {
     int ay2 = textTop + T.blockH + 8;
     if (ay2 < SCR_H - 12) {
       s.fillRect(24, ay2 - 5, 80, 2, ink);
