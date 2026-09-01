@@ -38,8 +38,22 @@ errors.
 Whenever there is no lyric on screen -- paused, between lines, or a track with
 no synced lyrics -- the panel shows the cover and the track name.
 
-Spotify's smallest thumbnail is 64x64, exactly half the panel, decoding to 8KB,
-so a whole track's art stays resident and redraws every frame with no refetch.
+The cover fills the panel, with track and artist over a darkened band.
+
+**Fetch the ~300px cover, not the 64x64 thumbnail, and fit rather than crop.**
+Decoding a 300px cover at scale 2 gives 150px, and cropping that to 128 throws
+away 26% of the sleeve -- 10px off each side. Covers put their artwork and
+lettering right to the edge, so a centre crop reads as a zoomed-in mistake.
+Decode at scale 2 into scratch, then bilinear-resample 150 -> 128; that keeps
+the whole cover and is far sharper than decoding at the next scale down, which
+would leave only ~75px.
+
+Verified by dumping the decoded buffer over serial (`a`) and diffing it against
+the source: mean per-pixel error 6.0 against the full cover fitted to 128,
+versus 40.2 against a centre crop.
+
+What remains is the panel, not the pipeline: 128x128 at RGB565 is 65k colours,
+so smooth gradients still band. Fetching a larger source cannot fix that.
 
 Decode it with `TJpgDec.setSwapBytes(false)`. The pairing TJpg_Decoder documents
 is `true`, but that is for callbacks pushing straight to a display already

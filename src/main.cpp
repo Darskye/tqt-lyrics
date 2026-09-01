@@ -256,6 +256,18 @@ void loop() {
       loadedTrack[0] = 0;
       Serial.println("[lrclib] forcing re-fetch on next poll");
     }
+    else if (c == 'a') {
+      // Dump the decoded cover as hex so it can be reconstructed off-device
+      // and compared against the source image, instead of guessing from how
+      // it looks on a 0.85 inch panel.
+      Serial.printf("[artdump] begin %d %d %s\n", ART_W, ART_H,
+                    gHaveArt ? "valid" : "EMPTY");
+      for (int y = 0; y < ART_H; y++) {
+        for (int x = 0; x < ART_W; x++) Serial.printf("%04X", gArt[y * ART_W + x]);
+        Serial.println();
+      }
+      Serial.println("[artdump] end");
+    }
     else if (c == 'o') {
       rotation = (rotation + 1) & 3;
       tft.setRotation(rotation);

@@ -103,7 +103,10 @@ static uint32_t mix(uint32_t seed, uint32_t salt) {
 static Scene sceneFromSeed(uint32_t seed) { return (Scene)(mix(seed, 1) % SC_COUNT); }
 static const Face& faceFromSeed(uint32_t seed) { return kFaces[mix(seed, 2) % kFaceCount]; }
 
-uint16_t    typeInk(uint32_t seed)       { return kInks[mix(seed, 3) % kInkCount]; }
+// Everything draws white. The palette below is kept because the machinery for
+// per-line colour is otherwise intact -- swap the return for
+// `kInks[mix(seed, 3) % kInkCount]` to turn it back on.
+uint16_t    typeInk(uint32_t seed)       { (void)seed; return INK_ON; }
 const char* typeSceneName(uint32_t seed) { return kSceneNames[sceneFromSeed(seed)]; }
 const char* typeFaceName(uint32_t seed)  { return faceFromSeed(seed).name; }
 
@@ -453,16 +456,51 @@ void typeDrawCard(TFT_eSprite& s, const uint16_t* art, bool haveArt,
     return;
   }
 
-  int textTop = 10;
-
   if (haveArt && art) {
-    // Cover is exactly half the panel width, sat above the title.
-    const int ax = (SCR_W - ART_W) / 2, ay = 6;
-    s.pushImage(ax, ay, ART_W, ART_H, art);
-    s.drawRect(ax - 1, ay - 1, ART_W + 2, ART_H + 2, ink);
-    textTop = ay + ART_H + 7;
+    // Full-bleed cover, with the title over a darkened band so it stays
+    // readable whatever the sleeve happens to be doing underneath.
+    s.pushImage(0, 0, ART_W, ART_H, art);
+
+    Layout T, A;
+    bool hasArtist = artist && *artist;
+    layoutFit(s, track, FACE_SANS, SCR_W - 10, 40, T);
+    if (hasArtist) layoutFit(s, artist, FACE_PIXEL, SCR_W - 10, 18, A);
+
+    int bandH = T.blockH + (hasArtist ? A.blockH + 3 : 0) + 10;
+    int bandY = SCR_H - bandH;
+
+    uint16_t* px = (uint16_t*)s.getPointer();
+    for (int y = bandY; y < SCR_H; y++) {
+      uint16_t* row = px + y * SCR_W;
+      for (int x = 0; x < SCR_W; x++) {
+        uint16_t c = row[x];
+        row[x] = (uint16_t)(((((c >> 11) & 0x1F) >> 2) << 11) |
+                            ((((c >> 5)  & 0x3F) >> 2) <<  5) |
+                            (( (c        & 0x1F) >> 2)));
+      }
+    }
+    s.drawFastHLine(0, bandY, SCR_W, ink);
+
+    s.setTextDatum(TC_DATUM);
+    s.setTextColor(ink);
+
+    applyRung(s, T.rung);
+    for (int i = 0; i < T.nRows; i++)
+      s.drawString(T.rows[i], SCR_W / 2, bandY + 5 + i * T.lineH);
+
+    if (hasArtist) {
+      applyRung(s, A.rung);
+      int ay = bandY + 5 + T.blockH + 3;
+      for (int i = 0; i < A.nRows; i++)
+        s.drawString(A.rows[i], SCR_W / 2, ay + i * A.lineH);
+    }
+
+    s.setTextFont(1);
+    s.setTextSize(1);
+    return;
   }
 
+  int textTop = 10;
   Layout T;
   layoutFit(s, track, FACE_SANS, SCR_W - 8, SCR_H - textTop - 3, T);
   applyRung(s, T.rung);

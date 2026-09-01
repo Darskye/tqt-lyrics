@@ -193,7 +193,9 @@ bool netPollSpotify(NowPlaying& out) {
   filter["item"]["duration_ms"]      = true;
   filter["item"]["album"]["name"]    = true;
   filter["item"]["artists"][0]["name"] = true;
-  // Spotify lists covers largest first (640/300/64); we want the smallest.
+  // Spotify lists covers largest first (640/300/64). We want the one nearest
+  // 300: big enough to downscale into a sharp 128px panel image, without
+  // pulling a 640px JPEG over TLS every track change.
   filter["item"]["album"]["images"][0]["url"]    = true;
   filter["item"]["album"]["images"][0]["height"] = true;
 
@@ -215,13 +217,14 @@ bool netPollSpotify(NowPlaying& out) {
 
   out.artUrl[0] = 0;
   JsonArray imgs = item["album"]["images"];
-  int smallest = 1 << 30;
+  int bestDelta = 1 << 30;
   for (JsonObject im : imgs) {
     int h = im["height"] | 0;
     const char* u = im["url"];
-    if (!u || !*u) continue;
-    if (h > 0 && h < smallest) {
-      smallest = h;
+    if (!u || !*u || h <= 0) continue;
+    int delta = h > 300 ? h - 300 : 300 - h;
+    if (delta < bestDelta) {
+      bestDelta = delta;
       strncpy(out.artUrl, u, sizeof(out.artUrl) - 1);
       out.artUrl[sizeof(out.artUrl) - 1] = 0;
     }
