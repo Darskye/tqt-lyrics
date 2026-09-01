@@ -5,8 +5,6 @@
 #include <stdio.h>
 
 // ---------------------------------------------------------------- fast trig
-// A libm sinf() per particle per frame would dominate the budget; a masked
-// table wraps for free and needs no range reduction.
 #define SIN_N    1024
 #define SIN_MASK (SIN_N - 1)
 #define SIN_SCALE (SIN_N / 6.2831853f)
@@ -29,252 +27,324 @@ static inline uint32_t mix(uint32_t seed, uint32_t salt) {
   return h;
 }
 
-// ---------------------------------------------------------------- plotting
-// Everything is white. Brightness is not colour here -- it is coverage and
-// depth, which is what keeps a dense field readable rather than a solid blob.
-// Values accumulate and saturate, so overlapping particles build up.
-static inline void addPix(uint16_t* fb, int x, int y, int v) {
-  if ((unsigned)x >= (unsigned)SCR_W || (unsigned)y >= (unsigned)SCR_H) return;
-  if (v <= 0) return;
-  uint16_t c = fb[y * SCR_W + x];
-  int lum = ((c >> 11) & 0x1F) + v;
-  if (lum > 31) lum = 31;
-  fb[y * SCR_W + x] = (uint16_t)((lum << 11) | ((lum << 1) << 5) | lum);
+// ---------------------------------------------------------------- noise
+// Value noise with smoothstep interpolation. This is what breaks up the
+// mechanical regularity: sine fields repeat because they are periodic, and no
+// amount of tuning fixes that. Noise does not repeat.
+static inline uint32_t hash2(int x, int y, uint32_t s) {
+  uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u + s * 2246822519u;
+  h = (h ^ (h >> 13)) * 1274126177u;
+  return h ^ (h >> 16);
+}
+static inline float h2f(int x, int y, uint32_t s) {
+  return (float)(hash2(x, y, s) >> 8) * (1.0f / 16777216.0f);   // 0..1
+}
+static float vnoise(float x, float y, uint32_t s) {
+  int xi = (int)(x + 4096.0f) - 4096, yi = (int)(y + 4096.0f) - 4096;
+  float fx = x - xi, fy = y - yi;
+  fx = fx * fx * (3.0f - 2.0f * fx);
+  fy = fy * fy * (3.0f - 2.0f * fy);
+  float a = h2f(xi, yi, s),     b = h2f(xi + 1, yi, s);
+  float c = h2f(xi, yi + 1, s), d = h2f(xi + 1, yi + 1, s);
+  float ab = a + (b - a) * fx, cd = c + (d - c) * fx;
+  return ab + (cd - ab) * fy;                                   // 0..1
+}
+// Two octaves is enough turbulence at this scale and half the cost of three.
+static inline float fbm(float x, float y, uint32_t s) {
+  return vnoise(x, y, s) * 0.65f + vnoise(x * 2.17f, y * 2.17f, s ^ 0x9E37u) * 0.35f;
 }
 
-// Bilinear splat at fractional coordinates. This is the single biggest quality
-// win over integer plotting: particles glide instead of stepping, and slow
-// motion stops looking like a stutter.
-static inline void splat(uint16_t* fb, float fx, float fy, int amp) {
+// ---------------------------------------------------------------- colour
+// Additive RGB, saturating per channel. Overlapping particles mix into new
+// hues on their own, which is where most of the colour range comes from --
+// far more than assigning each particle a colour and leaving it there.
+static inline void addPix(uint16_t* fb, int x, int y, int r, int g, int b) {
+  if ((unsigned)x >= (unsigned)SCR_W || (unsigned)y >= (unsigned)SCR_H) return;
+  uint16_t c = fb[y * SCR_W + x];
+  int cr = ((c >> 11) & 0x1F) + r;  if (cr > 31) cr = 31;
+  int cg = ((c >>  5) & 0x3F) + g;  if (cg > 63) cg = 63;
+  int cb = ( c        & 0x1F) + b;  if (cb > 31) cb = 31;
+  fb[y * SCR_W + x] = (uint16_t)((cr << 11) | (cg << 5) | cb);
+}
+
+// h: 0..191 around the wheel. amp: 0..31.
+static inline void hue2rgb(int h, int amp, int& r, int& g, int& b) {
+  h = ((h % 192) + 192) % 192;
+  int seg = h >> 5, f = h & 31;
+  int up = (amp * f) >> 5, dn = amp - up;
+  switch (seg) {
+    case 0:  r = amp; g = up;  b = 0;   break;
+    case 1:  r = dn;  g = amp; b = 0;   break;
+    case 2:  r = 0;   g = amp; b = up;  break;
+    case 3:  r = 0;   g = dn;  b = amp; break;
+    case 4:  r = up;  g = 0;   b = amp; break;
+    default: r = amp; g = 0;   b = dn;  break;
+  }
+}
+
+// Bilinear splat: particles glide at fractional coordinates instead of
+// stepping between whole pixels, which is what stops slow motion stuttering.
+static inline void splat(uint16_t* fb, float fx, float fy, int hue, int amp) {
   if (fx < -1.0f || fy < -1.0f || fx > (float)SCR_W || fy > (float)SCR_H) return;
-  int xi = (int)(fx + 256.0f) - 256;          // floor, without floorf()
+  if (amp <= 0) return;
+  if (amp > 31) amp = 31;
+  int r, g, b;
+  hue2rgb(hue, amp, r, g, b);
+  g <<= 1;                                    // green has the extra bit
+
+  int xi = (int)(fx + 256.0f) - 256;
   int yi = (int)(fy + 256.0f) - 256;
   int ax = (int)((fx - xi) * 32.0f), ay = (int)((fy - yi) * 32.0f);
   int iax = 32 - ax, iay = 32 - ay;
-  addPix(fb, xi,     yi,     (amp * iax * iay) >> 10);
-  addPix(fb, xi + 1, yi,     (amp * ax  * iay) >> 10);
-  addPix(fb, xi,     yi + 1, (amp * iax * ay ) >> 10);
-  addPix(fb, xi + 1, yi + 1, (amp * ax  * ay ) >> 10);
+
+  int w00 = (iax * iay) >> 5, w10 = (ax * iay) >> 5;
+  int w01 = (iax * ay ) >> 5, w11 = (ax * ay ) >> 5;
+  addPix(fb, xi,     yi,     (r * w00) >> 5, (g * w00) >> 5, (b * w00) >> 5);
+  addPix(fb, xi + 1, yi,     (r * w10) >> 5, (g * w10) >> 5, (b * w10) >> 5);
+  addPix(fb, xi,     yi + 1, (r * w01) >> 5, (g * w01) >> 5, (b * w01) >> 5);
+  addPix(fb, xi + 1, yi + 1, (r * w11) >> 5, (g * w11) >> 5, (b * w11) >> 5);
 }
 
 static const char* kNames[VIZ_COUNT] = {
-  "spiral", "vortex", "starfield", "tunnel", "rain",   "orbits",
-  "lattice", "ripple", "lissajous", "helix",  "swarm",  "bloom"
+  "spiral", "vortex", "starfield", "tunnel",  "rain",   "clifford",
+  "turbulence", "ripple", "dejong", "helix",  "swarm",  "bloom"
 };
-
 const char* vizNameAt(int i) { return kNames[((i % VIZ_COUNT) + VIZ_COUNT) % VIZ_COUNT]; }
 int vizIndexForSeed(uint32_t seed) { return (int)(mix(seed, 11) % VIZ_COUNT); }
 
 // ---------------------------------------------------------------- fields
 
-// Phyllotaxis: points at the golden angle with radius ~ sqrt(i) spread evenly,
-// and rotating the whole field makes the arms appear to swirl inward.
+// Phyllotaxis, then shoved around by turbulence so the arms wander instead of
+// sitting on perfect logarithmic curves.
 static void fSpiral(uint16_t* fb, float t, uint32_t sd) {
-  const int N = 1100;
+  const int N = 1200;
   const float golden = 2.39996323f;
-  float spin  = t * (0.35f + (mix(sd, 1) % 30) * 0.012f);
-  float pulse = 1.0f + 0.09f * fsin(t * 1.1f);
+  float spin = t * (0.30f + (mix(sd, 1) % 30) * 0.010f);
+  int hue0 = (int)(t * 22.0f);
   for (int i = 0; i < N; i++) {
     float a = i * golden + spin;
-    float r = 2.05f * sqrtf((float)i) * pulse;
-    if (r > 70.0f) break;
-    splat(fb, 64.0f + r * fcos(a), 64.0f + r * fsin(a), (i % 9 == 0) ? 31 : 20);
+    float r = 2.0f * sqrtf((float)i);
+    float px = 64.0f + r * fcos(a), py = 64.0f + r * fsin(a);
+    float n = fbm(px * 0.020f, py * 0.020f + t * 0.30f, sd);
+    float wob = (n - 0.5f) * 26.0f;
+    splat(fb, px + wob * fcos(a * 1.7f), py + wob * fsin(a * 1.7f),
+          hue0 + (int)(r * 2.1f) + (int)(n * 70.0f), 14 + (int)(n * 17.0f));
   }
 }
 
-// Particles falling inward while turning faster as they close on the centre,
-// respawning at the rim. Reads as a drain rather than a static spiral.
+// A drain, with the inflow broken up by noise so no two revolutions match.
 static void fVortex(uint16_t* fb, float t, uint32_t sd) {
-  const int N = 900;
+  const int N = 1100;
+  int hue0 = (int)(t * 30.0f);
   for (int i = 0; i < N; i++) {
     uint32_t h = mix(sd ^ i, 2);
     float ph  = (h & 1023) / 1024.0f;
     float ang = ((h >> 10) & 1023) * (TAU / 1024.0f);
-    float z   = fmodf(ph + t * 0.11f, 1.0f);
-    float r   = (1.0f - z) * 68.0f;
-    float a   = ang + t * (0.7f + 2.4f / (r * 0.06f + 1.0f));
-    splat(fb, 64.0f + r * fcos(a), 64.0f + r * fsin(a), 8 + (int)(z * 23));
+    float z   = fmodf(ph + t * 0.10f, 1.0f);
+    float r   = (1.0f - z) * 70.0f;
+    float a   = ang + t * (0.6f + 2.2f / (r * 0.06f + 1.0f));
+    float px = 64.0f + r * fcos(a), py = 64.0f + r * fsin(a);
+    float n = fbm(px * 0.03f + t * 0.4f, py * 0.03f, sd);
+    splat(fb, px + (n - 0.5f) * 20.0f, py + (n - 0.5f) * 20.0f,
+          hue0 + (int)(z * 130.0f) + (int)(n * 50.0f), 8 + (int)(z * 22));
   }
 }
 
-// Perspective stars: constant motion in z, projected, so they accelerate
-// outward and brighten as they approach.
+// Perspective stars, each keeping its own hue, drifting off-axis with noise.
 static void fStarfield(uint16_t* fb, float t, uint32_t sd) {
-  const int N = 850;
+  const int N = 900;
   for (int i = 0; i < N; i++) {
     uint32_t h = mix(sd ^ i, 3);
     float ang = (h & 2047) * (TAU / 2048.0f);
-    float rad = 4.0f + ((h >> 11) & 255) * 0.28f;
+    float rad = 4.0f + ((h >> 11) & 255) * 0.30f;
     float ph  = ((h >> 19) & 511) / 512.0f;
-    float z   = 1.0f - fmodf(ph + t * 0.22f, 1.0f);
+    float z   = 1.0f - fmodf(ph + t * 0.20f, 1.0f);
     if (z < 0.03f) continue;
-    float k = 0.9f / z;
-    float r = rad * k;
-    if (r > 92.0f) continue;
-    splat(fb, 64.0f + r * fcos(ang), 64.0f + r * fsin(ang), 4 + (int)((1.0f - z) * 27));
+    float r = rad * (0.9f / z);
+    if (r > 95.0f) continue;
+    float px = 64.0f + r * fcos(ang), py = 64.0f + r * fsin(ang);
+    float n = vnoise(px * 0.05f, py * 0.05f + t, sd);
+    splat(fb, px + (n - 0.5f) * 9.0f, py + (n - 0.5f) * 9.0f,
+          (int)(h >> 24) + (int)(t * 14.0f), 5 + (int)((1.0f - z) * 26));
   }
 }
 
-// Square rings receding down a corridor, each rotating a little, so the walls
-// appear to twist as they come at you.
+// A corridor whose rings are warped by noise, so the walls buckle rather than
+// staying perfect circles.
 static void fTunnel(uint16_t* fb, float t, uint32_t sd) {
-  const int RINGS = 16, PER = 56;
-  float twist = (mix(sd, 4) % 20) * 0.01f;
+  const int RINGS = 18, PER = 62;
   for (int ring = 0; ring < RINGS; ring++) {
-    float z = fmodf(ring / (float)RINGS + t * 0.16f, 1.0f);
+    float z = fmodf(ring / (float)RINGS + t * 0.15f, 1.0f);
     if (z < 0.04f) continue;
-    float k = 1.0f / z;
-    float rr = 7.0f * k;
-    if (rr > 100.0f) continue;
-    float spin = t * 0.5f + z * twist * 20.0f;
-    int amp = 3 + (int)((1.0f - z) * 28);
+    float rr = 7.0f / z;
+    if (rr > 105.0f) continue;
+    float spin = t * 0.45f + ring * 0.21f;
+    int amp = 3 + (int)((1.0f - z) * 27);
+    int hue = (int)(z * 150.0f + t * 26.0f);
     for (int i = 0; i < PER; i++) {
       float a = (TAU * i) / PER + spin;
-      splat(fb, 64.0f + rr * fcos(a), 64.0f + rr * fsin(a), amp);
+      float n = vnoise(fcos(a) * 2.0f + ring, fsin(a) * 2.0f + t * 0.7f, sd);
+      float r2 = rr * (0.72f + n * 0.55f);
+      splat(fb, 64.0f + r2 * fcos(a), 64.0f + r2 * fsin(a), hue + (int)(n * 60), amp);
     }
   }
 }
 
-// Columns of falling pixels at independent speeds, brightest at the head and
-// tapering behind, at sub-pixel positions so they slide rather than jump.
+// Columns that sway on a noise field and shift hue down their length.
 static void fRain(uint16_t* fb, float t, uint32_t sd) {
-  const int COLS = 42;
+  const int COLS = 46;
   for (int col = 0; col < COLS; col++) {
     uint32_t h = mix(sd ^ col, 5);
-    float spd = 26.0f + (h & 63) * 1.7f;
-    float off = ((h >> 6) & 511) / 512.0f * 180.0f;
-    int len = 10 + ((h >> 15) & 11);
-    float head = fmodf(off + t * spd, 190.0f) - 30.0f;
-    float x = col * (128.0f / COLS) + 1.0f;
+    float spd = 24.0f + (h & 63) * 2.0f;
+    float off = ((h >> 6) & 511) / 512.0f * 190.0f;
+    int len = 12 + ((h >> 15) & 13);
+    float head = fmodf(off + t * spd, 200.0f) - 34.0f;
+    float bx = col * (128.0f / COLS) + 1.0f;
+    int hue0 = (int)(h >> 24) + (int)(t * 18.0f);
     for (int k = 0; k < len; k++) {
-      float y = head - k * 2.4f;
-      splat(fb, x, y, 31 - (k * 28) / len);
+      float y = head - k * 2.3f;
+      float n = vnoise(bx * 0.08f, y * 0.05f + t * 0.8f, sd);
+      splat(fb, bx + (n - 0.5f) * 11.0f, y, hue0 + k * 3, 31 - (k * 27) / len);
     }
   }
 }
 
-// Concentric rings each turning at its own rate, so the field shears into
-// moving arms without any point actually travelling.
-static void fOrbits(uint16_t* fb, float t, uint32_t sd) {
-  int rings = 13 + (int)(mix(sd, 6) % 4);
-  for (int ring = 1; ring <= rings; ring++) {
-    float rr = ring * (68.0f / rings);
-    int n = 10 + ring * 5;
-    float rate = (ring & 1 ? 1.0f : -1.0f) * (0.85f - ring * 0.035f);
-    int amp = 10 + ring;
-    for (int i = 0; i < n; i++) {
-      float a = (TAU * i) / n + t * rate;
-      splat(fb, 64.0f + rr * fcos(a), 64.0f + rr * fsin(a), amp);
-    }
+// Clifford attractor. Genuinely chaotic rather than merely irregular: the
+// parameters drift, so the structure keeps folding into shapes it has not
+// held before instead of cycling.
+static void fClifford(uint16_t* fb, float t, uint32_t sd) {
+  const int N = 2200;
+  float a = -1.7f + 0.45f * fsin(t * 0.11f + (mix(sd, 6) % 100) * 0.06f);
+  float b =  1.8f + 0.40f * fcos(t * 0.083f);
+  float c = -1.9f + 0.35f * fsin(t * 0.061f + 1.7f);
+  float d = -0.8f + 0.40f * fcos(t * 0.047f + 0.6f);
+  float x = 0.1f, y = 0.0f;
+  int hue0 = (int)(t * 20.0f);
+  for (int i = 0; i < N; i++) {
+    float nx = fsin(a * y) + c * fcos(a * x);
+    float ny = fsin(b * x) + d * fcos(b * y);
+    x = nx; y = ny;
+    if (i < 24) continue;                       // let the orbit settle
+    splat(fb, 64.0f + x * 25.0f, 64.0f + y * 25.0f,
+          hue0 + (int)((x + y) * 26.0f), 11);
   }
 }
 
-// A dense lattice displaced by crossing travelling waves; the grid stays
-// legible while the surface breathes.
-static void fLattice(uint16_t* fb, float t, uint32_t sd) {
-  const int G = 30;
-  float k1 = 0.05f + (mix(sd, 7) % 16) * 0.003f;
-  for (int gy = 0; gy < G; gy++) {
-    float by = gy * (128.0f / G) + 2.0f;
-    float wy = fcos(by * 0.06f - t * 1.0f);
-    for (int gx = 0; gx < G; gx++) {
-      float bx = gx * (128.0f / G) + 2.0f;
-      float d = fsin(bx * k1 + t * 1.5f) + wy;
-      splat(fb, bx + d * 3.2f, by + d * 3.2f, 12 + (int)(d * 9.0f));
-    }
+// Pure fractal noise, rendered as a field of coloured motes drifting through
+// it. No geometry at all -- the least "designed"-looking of the set.
+static void fTurbulence(uint16_t* fb, float t, uint32_t sd) {
+  const int N = 1500;
+  for (int i = 0; i < N; i++) {
+    uint32_t h = mix(sd ^ i, 7);
+    float bx = (float)(h & 127), by = (float)((h >> 7) & 127);
+    float n1 = fbm(bx * 0.022f + t * 0.16f, by * 0.022f, sd);
+    float n2 = fbm(bx * 0.022f, by * 0.022f - t * 0.13f, sd ^ 0x5Au);
+    float x = bx + (n1 - 0.5f) * 46.0f;
+    float y = by + (n2 - 0.5f) * 46.0f;
+    splat(fb, x, y, (int)(n1 * 200.0f + t * 25.0f), 6 + (int)(n2 * 25.0f));
   }
 }
 
-// Interference of three expanding wavefronts, sampled on a grid. Crests light
-// up where the sources agree, so the pattern roils without any particle.
+// Interference of moving wavefronts whose sources wander on noise paths, so
+// the crests never settle into a standing pattern.
 static void fRipple(uint16_t* fb, float t, uint32_t sd) {
   float sx[3], sy[3];
   for (int k = 0; k < 3; k++) {
-    uint32_t h = mix(sd ^ k, 8);
-    float a = t * (0.3f + (h & 15) * 0.02f) + k * 2.1f;
-    sx[k] = 64.0f + 34.0f * fcos(a);
-    sy[k] = 64.0f + 34.0f * fsin(a * 0.8f + k);
+    float n1 = fbm(t * 0.22f + k * 5.0f, k * 3.0f, sd);
+    float n2 = fbm(k * 7.0f, t * 0.19f + k * 2.0f, sd ^ 0x33u);
+    sx[k] = 18.0f + n1 * 92.0f;
+    sy[k] = 18.0f + n2 * 92.0f;
   }
-  // Step 3 rather than 2: nine times fewer samples than per-pixel, and the
-  // splat covers the gaps. At step 2 this was the one field that could not
-  // hold framerate.
+  int hue0 = (int)(t * 28.0f);
   for (int y = 0; y < 128; y += 3) {
     for (int x = 0; x < 128; x += 3) {
       float v = 0;
       for (int k = 0; k < 3; k++) {
         float dx = x - sx[k], dy = y - sy[k];
-        v += fsin(sqrtf(dx * dx + dy * dy) * 0.28f - t * 3.0f);
+        v += fsin(sqrtf(dx * dx + dy * dy) * 0.27f - t * 2.6f);
       }
-      if (v > 1.4f) splat(fb, (float)x, (float)y, (int)((v - 1.4f) * 22.0f) + 8);
+      if (v > 1.15f)
+        splat(fb, (float)x, (float)y, hue0 + (int)(v * 46.0f), (int)((v - 1.15f) * 20.0f) + 7);
     }
   }
 }
 
-// A dense parametric curve whose frequency ratio drifts, so the figure keeps
-// folding into new shapes instead of looping.
-static void fLissajous(uint16_t* fb, float t, uint32_t sd) {
-  const int N = 1500;
-  float a = 3.0f + (mix(sd, 9) % 4);
-  float b = a + 1.0f + 0.35f * fsin(t * 0.13f);
-  float ph = t * 0.5f;
+// De Jong attractor: the other classic chaotic map, denser and lacier than
+// Clifford, and it folds differently as the parameters drift.
+static void fDeJong(uint16_t* fb, float t, uint32_t sd) {
+  const int N = 2400;
+  float a = 1.64f + 0.55f * fsin(t * 0.071f + (mix(sd, 9) % 100) * 0.06f);
+  float b = 1.90f + 0.50f * fcos(t * 0.059f);
+  float c = 0.90f + 0.60f * fsin(t * 0.043f + 2.2f);
+  float d = 1.10f + 0.55f * fcos(t * 0.037f + 1.1f);
+  float x = 0.05f, y = 0.12f;
+  int hue0 = (int)(t * 24.0f);
   for (int i = 0; i < N; i++) {
-    float u = (TAU * i) / N;
-    splat(fb, 64.0f + 56.0f * fsin(a * u + ph),
-              64.0f + 56.0f * fsin(b * u), 16);
+    float nx = fsin(a * y) - fcos(b * x);
+    float ny = fsin(c * x) - fcos(d * y);
+    x = nx; y = ny;
+    if (i < 24) continue;
+    splat(fb, 64.0f + x * 29.0f, 64.0f + y * 29.0f,
+          hue0 + (int)((x - y) * 30.0f), 10);
   }
 }
 
-// Two counter-rotating helices seen side-on, with depth from the z term.
+// Two strands, noise-perturbed so they fray rather than reading as a diagram.
 static void fHelix(uint16_t* fb, float t, uint32_t sd) {
-  const int N = 460;
-  float tw = 0.10f + (mix(sd, 10) % 10) * 0.008f;
+  const int N = 520;
+  float tw = 0.09f + (mix(sd, 10) % 10) * 0.008f;
   for (int strand = 0; strand < 2; strand++) {
     float off = strand * 3.14159f;
     for (int i = 0; i < N; i++) {
-      float y = (i / (float)N) * 150.0f - 11.0f;
-      float a = y * tw + t * 1.4f + off;
+      float y = (i / (float)N) * 152.0f - 12.0f;
+      float a = y * tw + t * 1.2f + off;
       float z = fcos(a);
-      float x = 64.0f + 44.0f * fsin(a);
-      splat(fb, x, y, 8 + (int)((z + 1.0f) * 11.0f));
+      float n = vnoise(y * 0.06f, t * 0.8f + strand * 9.0f, sd);
+      float x = 64.0f + 42.0f * fsin(a) + (n - 0.5f) * 22.0f;
+      splat(fb, x, y + (n - 0.5f) * 7.0f,
+            (int)(t * 20.0f) + strand * 90 + (int)(z * 34.0f), 7 + (int)((z + 1.0f) * 11.0f));
     }
   }
 }
 
-// Particles advected by a slowly turning flow field, respawning on a cycle.
-// The closest thing here to something organic.
+// Particles advected by a fractal flow field -- the most organic motion here,
+// because the field itself is noise rather than a sum of sines.
 static void fSwarm(uint16_t* fb, float t, uint32_t sd) {
-  const int N = 900;
+  const int N = 1300;
   for (int i = 0; i < N; i++) {
     uint32_t h = mix(sd ^ i, 12);
-    float life = fmodf(((h & 1023) / 1024.0f) + t * 0.09f, 1.0f);
-    float x0 = (float)((h >> 10) & 127);
-    float y0 = (float)((h >> 17) & 127);
-    float age = life * 34.0f;
-    // Two octaves of a sine flow field, integrated crudely over `age`.
-    float ang = fsin(x0 * 0.045f + t * 0.4f) * 2.2f +
-                fcos(y0 * 0.037f - t * 0.31f) * 2.2f;
-    float x = x0 + fcos(ang) * age;
-    float y = y0 + fsin(ang) * age;
+    float life = fmodf(((h & 1023) / 1024.0f) + t * 0.075f, 1.0f);
+    float x = (float)((h >> 10) & 127), y = (float)((h >> 17) & 127);
+    float age = life * 30.0f;
+    // Two crude integration steps: enough to curve the paths convincingly.
+    for (int k = 0; k < 2; k++) {
+      float ang = fbm(x * 0.017f, y * 0.017f + t * 0.22f, sd) * TAU * 2.0f;
+      x += fcos(ang) * age * 0.5f;
+      y += fsin(ang) * age * 0.5f;
+    }
     int amp = (int)(30.0f * (1.0f - fabsf(life - 0.5f) * 2.0f)) + 3;
-    splat(fb, x, y, amp);
+    splat(fb, x, y, (int)(life * 150.0f + t * 22.0f), amp);
   }
 }
 
-// Rings expanding from the centre and fading, staggered so one is always
-// arriving as another dissolves.
+// Rings expanding from wandering centres, each radius chewed by noise so they
+// arrive as ragged shockwaves rather than clean circles.
 static void fBloom(uint16_t* fb, float t, uint32_t sd) {
-  const int RINGS = 9;
-  float jitter = (mix(sd, 13) % 100) * 0.01f;
+  const int RINGS = 10;
   for (int b = 0; b < RINGS; b++) {
-    float ph = fmodf(t * 0.30f + b / (float)RINGS, 1.0f);
-    float r = ph * 82.0f;
+    float ph = fmodf(t * 0.27f + b / (float)RINGS, 1.0f);
+    float r = ph * 86.0f;
     int amp = (int)(31 * (1.0f - ph));
     if (amp < 2) continue;
-    int n = 26 + (int)(r * 2.1f);
-    float spin = t * 0.22f + b * 1.1f + jitter;
+    float cx = 64.0f + (fbm(b * 4.0f, t * 0.2f, sd) - 0.5f) * 34.0f;
+    float cy = 64.0f + (fbm(t * 0.17f, b * 6.0f, sd) - 0.5f) * 34.0f;
+    int n = 30 + (int)(r * 2.2f);
+    int hue = (int)(t * 26.0f) + b * 17;
     for (int i = 0; i < n; i++) {
-      float a = (TAU * i) / n + spin;
-      splat(fb, 64.0f + r * fcos(a), 64.0f + r * fsin(a), amp);
+      float a = (TAU * i) / n + t * 0.2f;
+      float nn = vnoise(fcos(a) * 3.0f + b, fsin(a) * 3.0f + t * 0.5f, sd);
+      float rr = r * (0.80f + nn * 0.42f);
+      splat(fb, cx + rr * fcos(a), cy + rr * fsin(a), hue + (int)(nn * 55), amp);
     }
   }
 }
@@ -284,18 +354,18 @@ void vizField(TFT_eSprite& s, int index, uint32_t seed, float t) {
   trigInit();
   uint16_t* fb = (uint16_t*)s.getPointer();
   switch (((index % VIZ_COUNT) + VIZ_COUNT) % VIZ_COUNT) {
-    case 0:  fSpiral(fb, t, seed);    break;
-    case 1:  fVortex(fb, t, seed);    break;
-    case 2:  fStarfield(fb, t, seed); break;
-    case 3:  fTunnel(fb, t, seed);    break;
-    case 4:  fRain(fb, t, seed);      break;
-    case 5:  fOrbits(fb, t, seed);    break;
-    case 6:  fLattice(fb, t, seed);   break;
-    case 7:  fRipple(fb, t, seed);    break;
-    case 8:  fLissajous(fb, t, seed); break;
-    case 9:  fHelix(fb, t, seed);     break;
-    case 10: fSwarm(fb, t, seed);     break;
-    default: fBloom(fb, t, seed);     break;
+    case 0:  fSpiral(fb, t, seed);     break;
+    case 1:  fVortex(fb, t, seed);     break;
+    case 2:  fStarfield(fb, t, seed);  break;
+    case 3:  fTunnel(fb, t, seed);     break;
+    case 4:  fRain(fb, t, seed);       break;
+    case 5:  fClifford(fb, t, seed);   break;
+    case 6:  fTurbulence(fb, t, seed); break;
+    case 7:  fRipple(fb, t, seed);     break;
+    case 8:  fDeJong(fb, t, seed);     break;
+    case 9:  fHelix(fb, t, seed);      break;
+    case 10: fSwarm(fb, t, seed);      break;
+    default: fBloom(fb, t, seed);      break;
   }
 }
 
@@ -312,8 +382,9 @@ void vizDraw(TFT_eSprite& s, int index, uint32_t seed, float tSec, float progres
     uint16_t* row = fb + y * SCR_W;
     for (int x = 0; x < SCR_W; x++) {
       uint16_t c = row[x];
-      int lum = ((c >> 11) & 0x1F) >> 2;
-      row[x] = (uint16_t)((lum << 11) | ((lum << 1) << 5) | lum);
+      row[x] = (uint16_t)(((((c >> 11) & 0x1F) >> 2) << 11) |
+                          ((((c >>  5) & 0x3F) >> 2) <<  5) |
+                          (( (c        & 0x1F) >> 2)));
     }
   }
 
@@ -333,7 +404,7 @@ void vizDraw(TFT_eSprite& s, int index, uint32_t seed, float tSec, float progres
     strncpy(buf, artist, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = 0;
     while (s.textWidth(buf) > SCR_W - 6 && strlen(buf) > 4) buf[strlen(buf) - 1] = 0;
-    s.setTextColor(0xC618);                 // a touch under white, still neutral
+    s.setTextColor(0xC618);
     s.drawString(buf, SCR_W / 2, bandY + 14);
   }
 

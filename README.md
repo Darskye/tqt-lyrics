@@ -35,36 +35,46 @@ errors.
 
 ## Visualisers
 
-Twelve white particle fields. Which one a song gets comes from an FNV-1a hash
+Twelve chaotic colour fields. Which one a song gets comes from an FNV-1a hash
 of its Spotify track id, so every track has its own and keeps it.
 
-| | | |
+| | | fps |
 |---|---|---|
-| spiral | phyllotaxis at the golden angle, arms swirling inward | 131 fps |
-| vortex | particles draining inward, turning faster as they close | 129 fps |
-| starfield | perspective stars accelerating outward | 110 fps |
-| tunnel | rings receding down a twisting corridor | 115 fps |
-| rain | columns falling at independent speeds, bright at the head | 122 fps |
-| orbits | concentric rings shearing into moving arms | 118 fps |
-| lattice | a 30x30 grid breathing under crossing waves | 116 fps |
-| ripple | interference of three moving wavefronts | 97 fps |
-| lissajous | a dense curve whose frequency ratio drifts | 112 fps |
-| helix | two counter-rotating strands seen side-on | 118 fps |
-| swarm | particles advected by a turning flow field | 109 fps |
-| bloom | staggered rings expanding and fading | 113 fps |
+| spiral | phyllotaxis shoved off its curves by turbulence | 90 |
+| vortex | a drain whose inflow noise breaks up every revolution | 86 |
+| starfield | perspective stars drifting off-axis, each its own hue | 102 |
+| tunnel | a corridor whose rings buckle instead of staying circular | 97 |
+| rain | columns swaying on a noise field, hue shifting down their length | 110 |
+| **clifford** | chaotic attractor, parameters drifting so it never recycles | 95 |
+| **turbulence** | pure fractal noise, no geometry at all | 75 |
+| ripple | interference from sources wandering on noise paths | 93 |
+| **dejong** | the other classic chaotic map, lacier than Clifford | 90 |
+| helix | two strands frayed by noise rather than drawn as a diagram | 102 |
+| swarm | particles advected by a fractal flow field | 75 |
+| bloom | ragged shockwaves from wandering centres | 97 |
 
-Everything is white. Brightness is not colour here, it is coverage and depth,
-which is what keeps a dense field readable instead of a solid blob.
+### Why the earlier set looked repetitive
 
-**Sub-pixel splatting is the quality difference.** Particles are drawn at
-fractional coordinates with bilinear weights and accumulate additively, so they
-glide rather than step and overlapping points build up. Integer plotting made
-slow motion look like a stutter.
+Everything was a closed-form sum of sines and circles. Those are *periodic* --
+they repeat by definition, and no amount of parameter tuning fixes it. Two
+things change that:
 
-**Build with `-ffast-math`.** Without it `sqrtf` compiles to a libm call with
-errno handling rather than the FPU instruction, and the fields that use it pay
-for it badly: spiral went 1.77ms -> 0.16ms and ripple 7.31ms -> 2.90ms just
-from that flag plus a coarser ripple grid.
+**Value noise with fbm.** Every field is now displaced by two octaves of noise,
+so arms wander, rings buckle and columns sway instead of tracing exact curves.
+
+**Chaotic attractors.** Clifford and De Jong are genuinely chaotic maps, not
+merely irregular ones. Their parameters drift with time, so the structure keeps
+folding into shapes it has not held before rather than cycling.
+
+### Colour
+
+Full spectrum, and most of the range comes from **additive RGB accumulation**:
+particles are splatted with per-particle hue and the channels sum and saturate,
+so overlaps mix into new colours by themselves. Assigning each particle a fixed
+colour gives far less variety than letting them blend.
+
+Hue is driven from radius, depth, noise value and time depending on the field,
+so the palette drifts continuously rather than sitting still.
 
 ### They do not react to the audio
 
