@@ -76,40 +76,18 @@ colour gives far less variety than letting them blend.
 Hue is driven from radius, depth, noise value and time depending on the field,
 so the palette drifts continuously rather than sitting still.
 
-### lyricform
+### matrix
 
-One turbulent field of particles that continuously reassembles itself into the
-current word. Not two populations -- there is no "text" set and no "background"
-set. Every particle carries the letterform at some moments and churns loose at
-others.
+Green katakana rain on a 16x16 cell grid. Columns fall at independent speeds
+with their own trail lengths, the leading cell washed toward white for the
+glow, the tail fading to dark green. Glyphs re-roll as they fall on a per-cell
+clock, so a column flickers rather than flipping all at once -- that flicker is
+what makes it read as characters instead of texture.
 
-**Each particle breathes on its own clock**, at its own rate and phase. A
-single global morph value made the whole field explode and implode in unison,
-which reads as one repeating pattern no matter how noisy the underlying motion
-is. With independent clocks, at any instant some particles are arriving, some
-holding, some tearing away, and the shape is being rebuilt continuously rather
-than snapped to.
-
-Each particle also draws a **fresh target every breath**, so it does not
-retrace the same dot, and turbulence stays on at full pull, so the word is made
-of churning pixels rather than settling into a clean bitmap.
-
-There is deliberately no ramp between words: fading out and back in for every
-word is itself a global beat. A word change washes through the field as each
-particle picks it up on its next breath. The only global ramp left is at the
-edges of a line, so the sea disperses between lines.
-
-Colour throughout, with **brightness** rather than hue lifting the letterform
-out of the sea -- whitening only the settled particles would reintroduce the
-separation this is built to avoid.
-
-**Font metrics cannot be trusted for the mask.** `fontHeight()` reports the
-line advance, which for several of these faces is smaller than the real ink
-once descenders are involved, so a word that fits by the numbers still loses
-its lower half. The rasteriser draws, measures the ink that actually landed,
-recentres on that, and only steps down a size if it genuinely does not fit.
-Verified on hardware: ink bounds land inside 0..127 every render, with no
-clipping reported.
+**The katakana are drawn, not typed.** TFT_eSPI's built-in fonts and every GFX
+free font are ASCII only (0x20..0x7E), so U+FF66..U+FF9D are simply not in
+them. They are 8x8 bitmaps here, which also gives an exact 8px cell and is what
+makes the grid line up.
 
 ### They do not react to the audio
 
@@ -287,6 +265,7 @@ pairings.
 | serial `m` | switch visuals <-> lyrics |
 | serial `n` | next visualiser (visuals) / re-roll style (lyrics) |
 | serial `V` / `L` | set visuals / lyrics mode absolutely |
+| serial `F` | dump the last frame as hex, to inspect off-device |
 | serial `A` | back to the per-track visualiser |
 | serial `s` | toggle status |
 | serial `o` | cycle panel rotation (prints the value for `SCREEN_ROTATION`) |

@@ -111,7 +111,7 @@ static inline void splat(uint16_t* fb, float fx, float fy, int hue, int amp) {
 static const char* kNames[VIZ_COUNT] = {
   "spiral", "vortex", "starfield", "tunnel",  "rain",   "clifford",
   "turbulence", "ripple", "dejong", "helix",  "swarm",  "bloom",
-  "lyricform"
+  "matrix"
 };
 const char* vizNameAt(int i) { return kNames[((i % VIZ_COUNT) + VIZ_COUNT) % VIZ_COUNT]; }
 int vizIndexForSeed(uint32_t seed) { return (int)(mix(seed, 11) % VIZ_COUNT); }
@@ -354,93 +354,107 @@ static void fBloom(uint16_t* fb, float t, uint32_t sd) {
 }
 
 
-// ---------------------------------------------------------------- lyricform
-// Particles drift chaotically and assemble into the current lyric line, then
-// scatter again between lines. Targets are the lit pixels of the line
-// rasterised offscreen, sampled evenly down to the particle count.
-#define MORPH_MAX 1100
+// ---------------------------------------------------------------- matrix
+// Half-width katakana, drawn as 8x8 bitmaps rather than typed. TFT_eSPI's
+// built-in fonts and every GFX free font are ASCII only (0x20..0x7E), so
+// U+FF66..U+FF9D simply are not in them. Drawing the glyphs also gives an
+// exact 8px cell, which is what makes the 16x16 rain grid line up.
+#define KANA_W 8
+#define KANA_H 8
 
-static int16_t g_mtx[MORPH_MAX], g_mty[MORPH_MAX];
-static int     g_mn = 0;
-static float   g_morph = 0.0f;
+static const uint8_t kKana[][KANA_H] = {
+  {0xFE,0x02,0x04,0x08,0x18,0x28,0x48,0x08}, // a
+  {0x04,0x08,0x10,0x30,0x50,0x10,0x10,0x10}, // i
+  {0x10,0x7C,0x44,0x44,0x04,0x08,0x10,0x20}, // u
+  {0xFE,0x10,0x10,0x10,0x10,0x10,0x10,0xFE}, // e
+  {0x10,0xFE,0x10,0x3C,0x54,0x14,0x24,0x48}, // o
+  {0x10,0xFE,0x12,0x12,0x22,0x24,0x48,0x30}, // ka
+  {0x08,0x7E,0x08,0xFF,0x08,0x08,0x10,0x20}, // ki
+  {0x7C,0x04,0x08,0x08,0x10,0x20,0x40,0x00}, // ku
+  {0x08,0x7E,0x88,0x08,0x10,0x10,0x20,0x40}, // ke
+  {0xFE,0x02,0x02,0x02,0x02,0x02,0xFE,0x00}, // ko
+  {0x24,0xFF,0x24,0x24,0x04,0x08,0x10,0x20}, // sa
+  {0x40,0x04,0x40,0x08,0x02,0x02,0x04,0x38}, // shi
+  {0xFE,0x04,0x08,0x18,0x28,0x48,0x88,0x08}, // su
+  {0x20,0xFC,0x24,0x24,0x20,0x20,0x22,0x1C}, // se
+  {0x44,0x04,0x08,0x08,0x10,0x20,0x40,0x00}, // so
+  {0x7C,0x44,0x48,0xFE,0x10,0x20,0x40,0x00}, // ta
+  {0x1C,0x60,0xFE,0x10,0x10,0x10,0x20,0x40}, // chi
+  {0x44,0x44,0x04,0x08,0x08,0x10,0x20,0x40}, // tsu
+  {0x7C,0x00,0xFE,0x10,0x10,0x10,0x20,0x40}, // te
+  {0x20,0x20,0x3C,0x22,0x20,0x20,0x20,0x20}, // to
+  {0x10,0xFE,0x10,0x10,0x10,0x10,0x20,0x40}, // na
+  {0x7C,0x00,0x00,0x00,0x00,0x00,0xFE,0x00}, // ni
+  {0x44,0x44,0x44,0x44,0x82,0x82,0x82,0x00}, // ha
+  {0x40,0x7C,0x40,0x40,0x7E,0x40,0x40,0x3E}, // hi
+  {0xFE,0x02,0x04,0x08,0x10,0x20,0x40,0x00}, // fu
+  {0x00,0x00,0x18,0x24,0x42,0x81,0x00,0x00}, // he
+  {0x10,0xFE,0x10,0x54,0x54,0x92,0x10,0x10}, // ho
+  {0xFE,0x02,0x7C,0x10,0x10,0x20,0x40,0x00}, // ma
+  {0x7C,0x00,0x3E,0x00,0x1F,0x00,0x00,0x00}, // mi
+  {0x08,0x08,0x10,0x24,0x42,0x42,0xFE,0x00}, // mu
+  {0x02,0x44,0x28,0x10,0x28,0x44,0x82,0x00}, // me
+  {0x7C,0x10,0xFE,0x10,0x10,0x12,0x0C,0x00}, // mo
+  {0x10,0x92,0x54,0x38,0x10,0x10,0x10,0x00}, // ya
+  {0x7C,0x04,0x04,0x04,0x04,0xFE,0x00,0x00}, // yu
+  {0xFE,0x02,0x7E,0x02,0x02,0xFE,0x00,0x00}, // yo
+  {0x7C,0x00,0xFE,0x02,0x04,0x08,0x30,0x00}, // ra
+  {0x44,0x44,0x44,0x44,0x44,0x48,0x50,0x60}, // ri
+  {0x44,0x44,0x44,0x44,0x44,0x4A,0x52,0x62}, // ru
+  {0x40,0x40,0x40,0x40,0x42,0x44,0x38,0x00}, // re
+  {0xFE,0x82,0x82,0x82,0x82,0x82,0xFE,0x00}, // ro
+  {0xFE,0x82,0x82,0x02,0x04,0x08,0x30,0x00}, // wa
+  {0x40,0x04,0x40,0x08,0x02,0x04,0x08,0x30}, // n
+};
+#define KANA_COUNT ((int)(sizeof(kKana) / sizeof(kKana[0])))
 
-void vizMorphAmount(float m) { g_morph = m < 0.0f ? 0.0f : (m > 1.0f ? 1.0f : m); }
-
-void vizMorphSet(TFT_eSprite& mask, const char* text) {
-  g_mn = 0;
-  int lit = typeRasterise(mask, text);
-  if (lit <= 0) return;
-
-  // Sample evenly rather than taking the first MORPH_MAX, which would fill
-  // only the top rows and leave the rest of the line unformed.
-  const uint8_t* p = (const uint8_t*)mask.getPointer();
-  int step = lit > MORPH_MAX ? lit / MORPH_MAX : 1;
-  int seen = 0;
-  for (int y = 0; y < SCR_H && g_mn < MORPH_MAX; y++) {
-    for (int x = 0; x < SCR_W && g_mn < MORPH_MAX; x++) {
-      if (!p[y * SCR_W + x]) continue;
-      if (seen % step == 0) { g_mtx[g_mn] = (int16_t)x; g_mty[g_mn] = (int16_t)y; g_mn++; }
-      seen++;
+// Green throughout. The leading cell is washed toward white, which is what
+// gives the rain its glowing head; the tail stays pure green.
+static void drawKana(uint16_t* fb, int px, int py, int gi, int lum, bool head) {
+  if (lum <= 0) return;
+  if (lum > 31) lum = 31;
+  const uint8_t* g = kKana[gi];
+  int r = head ? (lum * 7) / 10 : 0;
+  int b = head ? (lum * 7) / 10 : lum / 7;
+  for (int y = 0; y < KANA_H; y++) {
+    uint8_t bits = g[y];
+    if (!bits) continue;
+    int Y = py + y;
+    if ((unsigned)Y >= (unsigned)SCR_H) continue;
+    for (int x = 0; x < KANA_W; x++) {
+      if (!(bits & (0x80 >> x))) continue;
+      addPix(fb, px + x, Y, r, lum << 1, b);
     }
   }
 }
 
-static void fMorph(uint16_t* fb, float t, uint32_t sd) {
-  const int N = MORPH_MAX;
-  float m = g_morph;              // is a word being shown at all
+// Columns of falling katakana at independent speeds. Glyphs re-roll as they
+// fall, which is the flicker that makes the rain read as characters rather
+// than a texture.
+static void fMatrix(uint16_t* fb, float t, uint32_t sd) {
+  const int COLS = SCR_W / KANA_W;          // 16
+  const int ROWS = SCR_H / KANA_H;          // 16
 
-  for (int i = 0; i < N; i++) {
-    uint32_t h = mix(sd ^ (uint32_t)i, 77);
+  for (int c = 0; c < COLS; c++) {
+    uint32_t h = mix(sd ^ (uint32_t)c, 91);
+    float spd  = 5.0f + (float)(h & 15) * 1.5f;         // cells per second
+    float off  = (float)((h >> 4) & 255) / 256.0f * 30.0f;
+    int   len  = 5 + (int)((h >> 12) & 9);
+    float span = ROWS + len + 4.0f;
+    float head = fmodf(off + t * spd, span) - (float)len;
 
-    // Every particle is always in the turbulent flow. There is no separate
-    // "background" set: the same particles that carry the letterform are the
-    // ones churning around it, a moment earlier or later.
-    float bx = (float)(h & 127), by = (float)((h >> 7) & 127);
-    float n1 = fbm(bx * 0.019f + t * 0.17f, by * 0.019f, sd);
-    float n2 = fbm(bx * 0.019f, by * 0.019f - t * 0.15f, sd ^ 0x77u);
-    float cx = bx + (n1 - 0.5f) * 84.0f;
-    float cy = by + (n2 - 0.5f) * 84.0f;
+    for (int k = 0; k < len; k++) {
+      int row = (int)head - k;
+      if (row < 0 || row >= ROWS) continue;
 
-    // Each particle breathes in and out on its own clock, at its own rate and
-    // phase. A single global morph made the whole field explode and implode in
-    // lockstep -- one constant pattern. Independent clocks mean that at any
-    // instant some are arriving, some holding, some tearing away, and the
-    // shape is continuously being rebuilt rather than snapped to.
-    float ph   = (float)((h >> 14) & 1023) * (TAU / 1024.0f);
-    float rate = 0.30f + (float)((h >> 24) & 15) * 0.05f;
-    float cyc  = t * rate + ph;
+      // Re-roll on a per-cell clock so the whole column does not flip at once.
+      uint32_t frame = (uint32_t)(t * (4.0f + (float)(h & 7)));
+      uint32_t gh = mix((uint32_t)(c * 131 + row * 17), frame ^ (h >> 3));
+      int gi = (int)(gh % (uint32_t)KANA_COUNT);
 
-    // Skewed so a particle spends most of its cycle near the text and a
-    // shorter stretch loose: enough of the field is home at any moment for the
-    // word to read, while nothing ever stops moving.
-    float pull = (fsin(cyc) + 0.50f) * 1.7f;
-    if (pull < 0.0f) pull = 0.0f;
-    if (pull > 1.0f) pull = 1.0f;
-    pull *= m;
-
-    float px = cx, py = cy;
-    if (g_mn > 0 && pull > 0.002f) {
-      // A fresh target each breath, drawn independently per particle, so a
-      // particle does not retrace the same dot every cycle and the letterform
-      // is constantly re-formed out of different pixels.
-      uint32_t cycN = (uint32_t)(cyc * (1.0f / TAU));
-      int ti = (int)(mix(h, cycN) % (uint32_t)g_mn);
-
-      // Turbulence stays on at full pull, so the word is made of churning
-      // pixels rather than settling into a clean bitmap.
-      float jx = (vnoise(cx * 0.10f, cy * 0.10f + t * 2.3f, sd) - 0.5f) * 6.5f;
-      float jy = (vnoise(cy * 0.10f, cx * 0.10f - t * 2.0f, sd) - 0.5f) * 6.5f;
-
-      px = cx + ((float)g_mtx[ti] + jx - cx) * pull;
-      py = cy + ((float)g_mty[ti] + jy - cy) * pull;
+      int lum = (k == 0) ? 31 : 25 - (k * 23) / len;
+      drawKana(fb, c * KANA_W, row * KANA_H, gi, lum, k == 0);
     }
-
-    // Colour throughout -- brightness, not hue, is what lifts the letterform
-    // out of the sea. Whitening only the settled ones would reintroduce the
-    // very separation this is meant to remove.
-    int amp = 7 + (int)(pull * 22.0f);
-    int hue = (int)(n1 * 190.0f + t * 24.0f) + (int)(pull * 34.0f);
-    splat(fb, px, py, hue, amp);
   }
 }
 
@@ -461,7 +475,7 @@ void vizField(TFT_eSprite& s, int index, uint32_t seed, float t) {
     case 9:  fHelix(fb, t, seed);      break;
     case 10: fSwarm(fb, t, seed);      break;
     case 11: fBloom(fb, t, seed);      break;
-    default: fMorph(fb, t, seed);      break;
+    default: fMatrix(fb, t, seed);     break;
   }
 }
 

@@ -38,9 +38,6 @@
 
 static TFT_eSPI    tft;
 static TFT_eSprite spr[2] = {TFT_eSprite(&tft), TFT_eSprite(&tft)};
-// 8bpp scratch the lyricform visualiser rasterises a line into, to harvest
-// its lit pixels as particle targets. Never displayed.
-static TFT_eSprite maskSpr = TFT_eSprite(&tft);
 static int         cur = 0;
 
 static bool     showStatus = false;
@@ -108,58 +105,6 @@ static const char* kDemoLrc =
     "[00:30.00]\n";
 
 
-// Picks the word of `line` that should be showing `age` into a `span`, and how
-// assembled it should be. Words share the line's time in proportion to their
-// length, which follows the singing better than an even split -- LRC carries
-// per-line stamps only, so within a line this is an approximation either way.
-//
-// The morph ramps up at the start of each word and back down before the next,
-// so the field scatters and re-forms for every word rather than sliding one
-// shape into another.
-static int wordSlotAt(const char* line, uint32_t age, uint32_t span,
-                      char* out, int outSize, float& morph) {
-  out[0] = 0;
-  morph = 0.0f;
-  if (!line || !*line || span == 0) return -1;
-
-  int total = 0, wc = 0;
-  for (const char* p = line; *p; ) {
-    while (*p == ' ') p++;
-    if (!*p) break;
-    const char* w = p;
-    while (*p && *p != ' ') p++;
-    total += (int)(p - w) + 1;
-    wc++;
-  }
-  if (wc == 0 || total == 0) return -1;
-
-  uint32_t acc = 0;
-  const char* p = line;
-  for (int i = 0; i < wc; i++) {
-    while (*p == ' ') p++;
-    const char* w = p;
-    while (*p && *p != ' ') p++;
-    int len = (int)(p - w);
-
-    uint32_t slot = (uint32_t)((uint64_t)span * (uint32_t)(len + 1) / (uint32_t)total);
-    if (slot < 260) slot = 260;          // never flash past faster than readable
-
-    if (age < acc + slot || i == wc - 1) {
-      int n = (len < outSize - 1) ? len : outSize - 1;
-      memcpy(out, w, n);
-      out[n] = 0;
-      // Deliberately no per-word ramp. Fading the whole field out and back in
-      // between words is a global explode/implode beat -- exactly the "one
-      // constant pattern" this is meant to avoid. Particles pick up the new
-      // word on their own next breath instead, so the change washes through
-      // the field rather than resetting it.
-      morph = 1.0f;
-      return i;
-    }
-    acc += slot;
-  }
-  return -1;
-}
 
 // ------------------------------------------------------------------ network
 static void netTask(void*) {
@@ -303,10 +248,6 @@ void setup() {
     Serial.printf("sprite[%d] @ %p  %s\n", i, p,
                   esp_ptr_external_ram(p) ? "PSRAM (slow!)" : "internal SRAM");
   }
-  maskSpr.setColorDepth(8);
-  if (!maskSpr.createSprite(SCR_W, SCR_H))
-    Serial.println("WARN: mask sprite alloc failed; lyricform will stay scattered");
-
   heap_caps_malloc_extmem_enable(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL);
 
   Serial.printf("free internal heap: %u bytes\n",
@@ -380,6 +321,19 @@ void loop() {
       Serial.println("[lrclib] forcing re-fetch on next poll");
     }
     else if (c == 'v') netProbeAudioFeatures(np.trackId);
+    else if (c == 'F') {
+      // Dump the last completed frame as hex so it can be reconstructed and
+      // inspected off-device -- the only way to check what the panel is
+      // actually showing without eyes on it.
+      TFT_eSprite& d = spr[cur ^ 1];
+      uint16_t* fbp = (uint16_t*)d.getPointer();
+      Serial.printf("[framedump] begin %d %d\n", SCR_W, SCR_H);
+      for (int y = 0; y < SCR_H; y++) {
+        for (int x = 0; x < SCR_W; x++) Serial.printf("%04X", fbp[y * SCR_W + x]);
+        Serial.println();
+      }
+      Serial.println("[framedump] end");
+    }
     else if (c == 'o') {
       rotation = (rotation + 1) & 3;
       tft.setRotation(rotation);
@@ -398,45 +352,6 @@ void loop() {
 
   bool showLyric = (gMode == MODE_LYRICS) && idx >= 0 && lyrics.text(idx)[0];
 
-  // Feed the lyricform visualiser. Done in either mode, since it is selectable
-  // as a visualiser: it assembles while a line is showing and scatters between
-  // lines. Rasterising happens only on a line change, not per frame.
-  {
-    static int  morphLine = -2, morphWord = -1;
-    bool onLine = idx >= 0 && lyrics.text(idx)[0];
-    float m = 0.0f;
-
-    if (onLine) {
-      uint32_t st   = lyrics.timeAt(idx);
-      uint32_t nx   = (idx + 1 < lyrics.count()) ? lyrics.timeAt(idx + 1) : st + 4000;
-      uint32_t span = nx > st ? nx - st : 3000;
-      uint32_t age  = posMs > st ? posMs - st : 0;
-
-      char word[40];
-      int wi = wordSlotAt(lyrics.text(idx), age, span, word, sizeof(word), m);
-
-      // The only global ramp left is at the edges of the line itself, so the
-      // sea disperses between lines and gathers again for the next one.
-      uint32_t lft = nx > posMs ? nx - posMs : 0;
-      float rise = age / 500.0f; if (rise > 1.0f) rise = 1.0f;
-      float fall = lft / 500.0f; if (fall > 1.0f) fall = 1.0f;
-      m *= (rise < fall ? rise : fall);
-      if (wi >= 0 && (idx != morphLine || wi != morphWord)) {
-        // One word at a time: a whole line has to shrink to fit and ends up
-        // clipped, whereas a single word can be set large.
-        vizMorphSet(maskSpr, word);
-        // Indices only -- the panel is the place for the words themselves.
-        Serial.printf("[morph] line %d word %d (%d chars)\n",
-                      idx, wi, (int)strlen(word));
-        morphLine = idx;
-        morphWord = wi;
-      }
-    } else {
-      morphLine = -2;
-      morphWord = -1;
-    }
-    vizMorphAmount(m);
-  }
 
   if (showLyric) {
     uint32_t startMs = lyrics.timeAt(idx);
