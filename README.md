@@ -12,20 +12,41 @@ At roughly 16 characters per row there is no room for a lyric sheet, so this
 does not try to be one. It shows one line at a time and lets the *presentation*
 carry it: scale, motion, inversion and layout instead of colour.
 
-## Colour
+## Colour and type
 
-Type is drawn in one ink colour per track, pulled from the album art.
+Each line gets its own **colour** and its own **typeface**, drawn independently
+from the line index so they change together but never in lockstep.
 
-Spotify's response already carries cover thumbnails; the smallest (64x64, a few
-KB) is fetched and decoded on-device, and each pixel is binned into a coarse
-512-bucket histogram **weighted by saturation**. That weighting is the whole
-trick: a mostly-grey sleeve with one red stripe reads as red rather than
-averaging to mud. Near-black and washed-out pixels are skipped entirely.
+Colour comes from a curated set of twelve high-value inks rather than a random
+RGB triple: arbitrary values land on muddy or too-dark colours often enough to
+matter on a black field.
 
-The winning bucket is brightness-normalised so it stays legible on black
-without shifting hue. If fewer than 3% of pixels are colourful at all -- a
-black, white or greyscale sleeve -- it falls back to **white**, which is both
-the honest answer and the better-looking one.
+Five type families are in rotation -- **sans, serif, mono, oblique** and the
+built-in **pixel** cell. Each is a ladder of faces from 24pt down, ending at the
+6x8 GLCD cell. `layoutFit()` walks the ladder and takes the first rung where the
+whole line fits, so a long line simply arrives in a smaller face instead of
+being clipped. The last rung is accepted unconditionally as the floor: 21
+columns by 16 rows holds ~330 characters, longer than any lyric line.
+
+The free fonts come with TFT_eSPI itself -- `Fonts/GFXFF/gfxfont.h` is an
+aggregator that includes the whole set. Do not `#include` individual font
+headers on top of that: they carry no include guards and you get redefinition
+errors.
+
+## Album art
+
+Whenever there is no lyric on screen -- paused, between lines, or a track with
+no synced lyrics -- the panel shows the cover and the track name.
+
+Spotify's smallest thumbnail is 64x64, exactly half the panel, decoding to 8KB,
+so a whole track's art stays resident and redraws every frame with no refetch.
+
+Decode it with `TJpgDec.setSwapBytes(false)`. The pairing TJpg_Decoder documents
+is `true`, but that is for callbacks pushing straight to a display already
+configured to swap; here it reverses the bytes and scrambles the channels. This
+is not a red/blue swap -- it mangles all three -- and it looks plausible enough
+to miss. Verified against the source image: for one cover the centre pixel must
+read `0x2040`, and `true` produced `0x4020`.
 
 ## Scenes
 

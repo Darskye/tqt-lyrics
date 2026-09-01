@@ -39,9 +39,11 @@ static int         cur = 0;
 static bool     showStatus = false;
 static uint32_t sceneSalt  = 0;      // shifts scene choice without touching timing
 static int      fps = 0;
-// Ink colour for everything drawn. Pulled from the album art per track,
-// white whenever the sleeve is black, greyscale, or unavailable.
-static volatile uint16_t gInk = INK_ON;
+// Decoded cover for the current track, shown whenever there is no lyric on
+// screen. Written by netTask, read by loop -- gHaveArt gates it so a
+// half-decoded image is never drawn.
+static uint16_t      gArt[ART_PX];
+static volatile bool gHaveArt = false;
 static uint8_t  rotation = SCREEN_ROTATION;
 
 // ------------------------------------------------------------------ playback
@@ -100,8 +102,8 @@ static void netTask(void*) {
               haveLyrics = false;
               Serial.println("[lyrics] none on lrclib for this track");
             }
-            uint16_t ink = INK_ON;
-            gInk = artFetchInk(fresh.artUrl, ink) ? ink : INK_ON;
+            gHaveArt = false;
+            gHaveArt = artFetchBitmap(fresh.artUrl, gArt);
 
             strncpy(loadedTrack, fresh.track, sizeof(loadedTrack) - 1);
             loadedTrack[sizeof(loadedTrack) - 1] = 0;
@@ -276,22 +278,25 @@ void loop() {
                                                   : startMs + 4000;
     uint32_t age  = posMs > startMs ? posMs - startMs : 0;
     uint32_t hold = nextMs > startMs ? nextMs - startMs : 3000;
-    typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt, gInk);
+    typeDraw(s, lyrics.text(idx), age, hold, (uint32_t)idx + sceneSalt);
   } else {
     // Between lines and between tracks: hold the track card rather than
     // flashing an empty panel.
-    typeDrawIdle(s, live ? np.track : "", live ? np.artist : "",
-                 netStatus(), millis(), gInk);
+    // Paused, between lines, or no lyrics for this track: show the cover.
+    typeDrawCard(s, gArt, gHaveArt,
+                 live ? np.track : "", live ? np.artist : "",
+                 netStatus(), millis(), sceneSalt);
   }
 
   if (idx != lastLineIdx) {
     if (idx >= 0 && lyrics.text(idx)[0])
     {
-      int fs, fr, fa; bool clipped;
-      typeLastFit(fs, fr, fa, clipped);
-      Serial.printf("[line %d] %-8s %3d chars  size %d/%d  %d rows%s\n",
-                    idx, typeSceneName((uint32_t)idx + sceneSalt),
-                    (int)strlen(lyrics.text(idx)), fs, fa, fr,
+      int fr; bool clipped;
+      typeLastFit(fr, clipped);
+      uint32_t sd = (uint32_t)idx + sceneSalt;
+      Serial.printf("[line %d] %-8s %-8s %3d chars  %d rows%s\n",
+                    idx, typeSceneName(sd), typeFaceName(sd),
+                    (int)strlen(lyrics.text(idx)), fr,
                     clipped ? "   *** CLIPPED ***" : "");
     }
     lastLineIdx = idx;

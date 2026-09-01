@@ -12,24 +12,27 @@
 // underneath -- the type is the picture, so every scene owns the whole frame
 // including clearing it.
 //
-// The scene is chosen deterministically from `seed` (the line index) so it
-// holds for that line and changes on the next. Type auto-fits: the size steps
-// down until the whole line fits, so a long line is never clipped.
+// Scene, typeface and colour are all chosen deterministically from `seed` (the
+// line index), so they hold steady for that line and change on the next.
+// Type auto-fits down a ladder of faces and sizes, so a long line is never
+// clipped -- it just arrives in a smaller face.
 //
 //   ageMs  -- how long this line has been showing
 //   holdMs -- how long until the next line takes over
-//   ink    -- the single colour everything is drawn in (white by default,
-//             or a colour pulled from the album art)
 void typeDraw(TFT_eSprite& s, const char* text,
-              uint32_t ageMs, uint32_t holdMs, uint32_t seed,
-              uint16_t ink = INK_ON);
+              uint32_t ageMs, uint32_t holdMs, uint32_t seed);
 
-// Shown between tracks, or when a track has no synced lyrics.
-void typeDrawIdle(TFT_eSprite& s, const char* track, const char* artist,
-                  const char* status, uint32_t ms, uint16_t ink = INK_ON);
+// Shown whenever there is no lyric to show: paused, between lines, or a track
+// with no synced lyrics. Displays the cover art and the track name.
+// `art` may be null / `haveArt` false, in which case it falls back to type.
+void typeDrawCard(TFT_eSprite& s, const uint16_t* art, bool haveArt,
+                  const char* track, const char* artist, const char* status,
+                  uint32_t ms, uint32_t seed);
 
 const char* typeSceneName(uint32_t seed);
+const char* typeFaceName(uint32_t seed);
+uint16_t    typeInk(uint32_t seed);
 
-// Result of the most recent fit: chosen size, rows used, size asked for,
-// and whether even size 1 failed to contain the text (should never be true).
-void typeLastFit(int& size, int& rows, int& asked, bool& clipped);
+// Result of the most recent fit: rows used, and whether even the smallest rung
+// failed to contain the text (should never be true).
+void typeLastFit(int& rows, bool& clipped);
